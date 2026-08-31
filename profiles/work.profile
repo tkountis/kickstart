@@ -9,4 +9,7 @@
 
 gh
 direnv
+oh-my-bash
+oh-my-zsh
+iterm2
 macos-defaults

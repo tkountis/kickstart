@@ -67,11 +67,20 @@ ks_overlay_add() {
   fi
   ks_mkdir "$KS_OVERLAY_DIR"
   ks_step "cloning overlay '$name' from $url"
-  # --recurse-submodules: overlays commonly vendor internal completion scripts
-  # and small tools as submodules.
-  ks_run git clone --depth 1 --recurse-submodules --shallow-submodules \
-    "$url" "$dest" || ks_die "clone failed"
+  ks_run git clone --depth 1 "$url" "$dest" || ks_die "clone failed"
+  ks_overlay_submodules "$dest"
   ks_ok "overlay '$name' added"
+}
+
+# ks_overlay_submodules <dir> -- best effort. Overlays commonly vendor internal
+# completion scripts as submodules whose host is only reachable on the VPN;
+# failing to fetch them must not make the whole overlay unusable.
+ks_overlay_submodules() {
+  local dir=$1
+  [ -f "$dir/.gitmodules" ] || return 0
+  [ "${KS_OFFLINE:-0}" = 1 ] && { ks_skip "offline: not fetching submodules"; return 0; }
+  ks_run git -C "$dir" submodule update --init --recursive --depth 1 ||
+    ks_warn "could not fetch submodules for $(basename "$dir") -- the overlay still works, anything that depends on vendor/ will not"
 }
 
 # ks_overlay_remove <name>
@@ -89,10 +98,7 @@ ks_overlay_update() {
   for d in $(ks_overlay_dirs); do
     ks_step "updating overlay $(basename "$d")"
     ks_run git -C "$d" pull --ff-only --quiet || ks_warn "pull failed for $(basename "$d")"
-    if [ -f "$d/.gitmodules" ]; then
-      ks_run git -C "$d" submodule update --init --recursive --depth 1 ||
-        ks_warn "submodule update failed for $(basename "$d")"
-    fi
+    ks_overlay_submodules "$d"
   done
 }
 

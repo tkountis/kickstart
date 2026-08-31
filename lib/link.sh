@@ -44,7 +44,7 @@ ks_link_file() {
 
   if [ -L "$target" ]; then
     local current
-    current=$(ks_readlink "$target")
+    current=$(ks_link_target "$target")
     if [ "$current" = "$src" ]; then
       ks_debug "link ok: $(ks_relpath "$target")"
       return 3
@@ -72,7 +72,7 @@ ks_unlink_tree() {
     rel=${file#"$src"/}
     case " $KS_LINK_IGNORE " in *" $(basename "$rel") "*) continue ;; esac
     target="$dest_root/$rel"
-    if [ -L "$target" ] && [ "$(ks_readlink "$target")" = "$file" ]; then
+    if [ -L "$target" ] && [ "$(ks_link_target "$target")" = "$file" ]; then
       ks_chg "unlink $(ks_relpath "$target")"
       ks_run rm -f "$target"
     fi
@@ -94,12 +94,11 @@ ks_backup_path() {
   ks_run mv "$path" "$dest"
 }
 
-# ks_readlink <path> -- portable `readlink` (macOS has no `readlink -f`).
-ks_readlink() {
-  if ks_have greadlink; then greadlink -f "$1"
-  elif [ "$KS_OS" = linux ]; then readlink -f "$1"
-  else
-    # macOS: single-level resolve is enough, our links are never chained.
-    readlink "$1"
-  fi
-}
+# ks_link_target <path> -- the raw target a symlink stores.
+#
+# Deliberately NOT `readlink -f`. Canonicalising resolves symlinked parent
+# directories (/var -> /private/var on macOS, /home -> /export/home on plenty
+# of NFS setups), so the result would never equal the path we wrote and every
+# apply would relink. We wrote the link, so a literal comparison is both
+# correct and cheaper.
+ks_link_target() { readlink "$1" 2>/dev/null; }

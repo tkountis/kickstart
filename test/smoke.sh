@@ -188,6 +188,11 @@ has "$profs" '^team .*shell git hello'; check $? "overlay profile can @include a
 
 ks apply --files-only --profile team -y >/dev/null 2>&1
 [ -L "$SANDBOX/home/.hello-overlay" ]; check $? "overlay dotfile linked"
+# Overlays live under a path that may reach $HOME through a symlink
+# (/var -> /private/var). If we canonicalised link targets, this would relink
+# on every run.
+out=$(ks apply --files-only --profile team -y 2>&1)
+has "$out" 'done: 0 changed'; check $? "overlay links are idempotent"
 
 helpers=$(env HOME="$SANDBOX/home" XDG_DATA_HOME="$SANDBOX/home/.local/share" \
   KICKSTART_ROOT="$ROOT" "$ROOT/shell/khelp.sh" 2>/dev/null)

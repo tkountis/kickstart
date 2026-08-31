@@ -37,11 +37,13 @@ elif [ -n "${BASH_VERSION:-}" ]; then
 fi
 
 # Homebrew on Linux is a user-space install; make it visible if it exists.
+# `brew shellenv` costs ~30ms, which is most of a shell startup, so cache it.
 if [ -z "${HOMEBREW_PREFIX:-}" ]; then
   for _ks_brew in /opt/homebrew/bin/brew /usr/local/bin/brew \
                   /home/linuxbrew/.linuxbrew/bin/brew "$HOME/.linuxbrew/bin/brew"; do
     if [ -x "$_ks_brew" ]; then
-      eval "$("$_ks_brew" shellenv)"
+      _ks_eval_cached brew-shellenv.sh "$_ks_brew" "$_ks_brew" shellenv ||
+        eval "$("$_ks_brew" shellenv)"
       break
     fi
   done

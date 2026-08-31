@@ -29,6 +29,37 @@ KICKSTART_DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/kickstart"
 KICKSTART_CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/kickstart"
 export KICKSTART_DATA_DIR KICKSTART_CONFIG_DIR
 
+KICKSTART_CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/kickstart"
+export KICKSTART_CACHE_DIR
+
+# _ks_eval_cached <key> <binary> <command...>
+#
+# Source the output of a slow generator (shell completions, `brew shellenv`),
+# caching it under ~/.cache/kickstart. Regenerated when the binary that
+# produced it is newer than the cache, so upgrading a tool refreshes it.
+#
+# The cache is plain shell you can read, and `kcache clear` throws it away, so
+# a stale cache is a 5 second problem rather than a mystery.
+_ks_eval_cached() {
+  _kskey=$1
+  _ksbin=$2
+  shift 2
+  _ksfile="$KICKSTART_CACHE_DIR/$_kskey"
+  _ksbinpath=$(command -v "$_ksbin" 2>/dev/null) || { unset _kskey _ksbin _ksfile _ksbinpath; return 1; }
+
+  if [ ! -s "$_ksfile" ] || [ "$_ksbinpath" -nt "$_ksfile" ]; then
+    mkdir -p "$KICKSTART_CACHE_DIR" 2>/dev/null
+    if "$@" >"$_ksfile.new" 2>/dev/null && [ -s "$_ksfile.new" ]; then
+      mv "$_ksfile.new" "$_ksfile"
+    else
+      rm -f "$_ksfile.new"
+    fi
+  fi
+  # shellcheck disable=SC1090
+  [ -s "$_ksfile" ] && . "$_ksfile"
+  unset _kskey _ksbin _ksfile _ksbinpath
+}
+
 # Host-local settings written by `kickstart profile <name>`.
 if [ -r "$KICKSTART_CONFIG_DIR/config" ]; then
   . "$KICKSTART_CONFIG_DIR/config"
