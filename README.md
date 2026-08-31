@@ -123,6 +123,9 @@ Files from kickstart and every overlay are interleaved by filename, so a work
 overlay's `15_work_path.sh` lands between core's `10_path.sh` and
 `20_aliases.sh` without either repo knowing about the other.
 
+A file can opt out of portability when it is not worth it: `NN_topic.bash` is
+sourced only by bash, `NN_topic.zsh` only by zsh, `NN_topic.sh` by both.
+
 Document a function with a `#:` line and it shows up in `khelp`:
 
 ```sh

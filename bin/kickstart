@@ -78,6 +78,7 @@ COMMANDS
   overlay <sub>          add <git-url> [name] | list | remove <name> | update
   new module <name>      Scaffold a new module.
   new helper <name>      Scaffold a new shell helper file.
+                         --bash / --zsh for a shell-specific one.
   keys <sub>             status | new [name] | track | publish | authorized
   secrets <sub>          init | ls | add | cat | edit | rm | rekey | sync |
                          recipients | recipient-add <pubkey>
@@ -422,9 +423,10 @@ cmd_secrets() {
 cmd_new() {
   local kind=${1:-} name=${2:-}
   [ -n "$name" ] || ks_die "usage: kickstart new <module|helper> <name>"
+  shift 2
   case "$kind" in
-    module) new_module "$name" ;;
-    helper) new_helper "$name" ;;
+    module) ks_no_flags "new module" "$@"; new_module "$name" ;;
+    helper) new_helper "$name" "$@" ;;
     *) ks_die "kickstart new <module|helper> <name>" ;;
   esac
 }
@@ -489,7 +491,17 @@ EOF
 }
 
 new_helper() {
-  local name=$1 root dir prefix file
+  local name=$1 ext=sh root dir prefix file
+  shift
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --bash) ext=bash ;;
+      --zsh)  ext=zsh ;;
+      *) ks_die "new helper: unknown option '$1' (--bash | --zsh)" ;;
+    esac
+    shift
+  done
+
   root=$(_ks_scaffold_root)
   dir="$root/shell/source"
   mkdir -p "$dir"
@@ -499,13 +511,21 @@ new_helper() {
     [0-9][0-9]_*) prefix="" ;;
     *)            prefix="50_" ;;
   esac
-  file="$dir/${prefix}${name}.sh"
+  file="$dir/${prefix}${name}.${ext}"
   [ -e "$file" ] && ks_die "helper already exists: $(ks_relpath "$file")"
 
+  local portability
+  case "$ext" in
+    sh)   portability="Sourced by every interactive shell (bash and zsh), so keep
+# it portable: no zsh-only or bash-4-only syntax." ;;
+    bash) portability="Only sourced by bash, so bash-only syntax (arrays,
+# [[ ]], FUNCNAME, completions) is fine here." ;;
+    zsh)  portability="Only sourced by zsh, so zsh-only syntax is fine here." ;;
+  esac
+
   cat >"$file" <<EOF
-# shellcheck shell=bash
-# ${name} helpers. Sourced by every interactive shell (bash and zsh), so keep
-# it portable: no zsh-only or bash-4-only syntax.
+# shellcheck shell=${ext%sh}sh
+# ${name} helpers. ${portability}
 #
 # Document each function with a '#:' line. That is what \`khelp\` reads.
 

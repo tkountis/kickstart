@@ -54,14 +54,21 @@ kwhich() {
 
 # ---- internals -------------------------------------------------------------
 
+# All helper files across kickstart and every overlay. `find` rather than a
+# glob: zsh errors on an unmatched glob.
 _ks_helper_files() {
-  printf '%s\n' "$KICKSTART_ROOT"/shell/source/*.sh
-  if [ -d "$KICKSTART_DATA_DIR/overlays" ]; then
-    for _d in "$KICKSTART_DATA_DIR/overlays"/*/shell/source/*.sh; do
-      [ -f "$_d" ] && printf '%s\n' "$_d"
-    done
-    unset _d
-  fi
+  {
+    printf '%s\n' "$KICKSTART_ROOT/shell/source"
+    if [ -d "$KICKSTART_DATA_DIR/overlays" ]; then
+      find "$KICKSTART_DATA_DIR/overlays" -maxdepth 3 -type d \
+        -path '*/shell/source' -print 2>/dev/null
+    fi
+  } | while IFS= read -r _d; do
+    [ -d "$_d" ] || continue
+    find "$_d" -maxdepth 1 -type f \
+      \( -name '*.sh' -o -name '*.bash' -o -name '*.zsh' \) -print 2>/dev/null | sort
+  done
+  unset _d
 }
 
 # Resolve a topic name to a helper file path, prompting when ambiguous.

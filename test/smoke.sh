@@ -201,6 +201,35 @@ expected=$(printf '%s\n' "$order" | LC_ALL=C sort)
 [ "$order" = "$expected" ]; check $? "helper files load in filename order across repos"
 
 # --------------------------------------------------------------------------
+section "shell-specific helper files"
+mkdir -p "$SANDBOX/home/.local/share/kickstart/overlays/testov/shell/source"
+OVS="$SANDBOX/home/.local/share/kickstart/overlays/testov/shell/source"
+printf '#: bashfn -- bash only helper\nbashfn() { echo b; }\n' >"$OVS/56_bashonly.bash"
+printf '#: zshfn -- zsh only helper\nzshfn() { echo z; }\n'    >"$OVS/57_zshonly.zsh"
+printf '#: bothfn -- portable helper\nbothfn() { echo p; }\n'  >"$OVS/58_both.sh"
+
+# shellcheck disable=SC2016  # evaluated by the child shell
+probe() { # probe <shell> <fn> -- is <fn> defined after init?
+  env HOME="$SANDBOX/home" KICKSTART_ROOT="$ROOT" "$1" -c \
+    ". \"\$KICKSTART_ROOT/shell/init.sh\"; command -v $2" >/dev/null 2>&1
+}
+probe bash bashfn; check $? ".bash helper loads in bash"
+refute ".bash helper does not load in zsh" probe zsh bashfn
+probe zsh zshfn;   check $? ".zsh helper loads in zsh"
+refute ".zsh helper does not load in bash" probe bash zshfn
+probe bash bothfn; check $? ".sh helper loads in bash"
+probe zsh bothfn;  check $? ".sh helper loads in zsh"
+
+helpers=$(env HOME="$SANDBOX/home" XDG_DATA_HOME="$SANDBOX/home/.local/share" \
+  KICKSTART_ROOT="$ROOT" "$ROOT/shell/khelp.sh" 2>/dev/null)
+has "$helpers" 'bashfn';    check $? "khelp lists shell-specific helpers"
+has "$helpers" 'bash only'; check $? "khelp labels which shell a file needs"
+
+ks new helper probebash --bash >/dev/null 2>&1
+[ -f "$ROOT/shell/source/50_probebash.bash" ]; check $? "new helper --bash makes a .bash file"
+rm -f "$ROOT/shell/source/50_probebash.bash"
+
+# --------------------------------------------------------------------------
 section "keys"
 # Work against the *cloned* overlay, which is what kickstart actually reads.
 # (A real workflow would commit to $OV and `kickstart overlay update`.)

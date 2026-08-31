@@ -62,13 +62,32 @@ These files are sourced by **both bash and zsh**. Stick to POSIX:
 
 - no `[[ ... ]]` — use `[ ... ]` and `case`
 - no arrays
-- no `${x^^}`, `${x,,}`, `local -n`
+- no `${x^^}`, `${x,,}`, `local -n`, `FUNCNAME`, `BASH_SOURCE`
 - no `function foo()` — just `foo()`
 - prefix internal variables with `_` and `unset` them; there is no `local`
   keyword guarantee across shells for non-function scope
 - guard on tool presence: `command -v fzf >/dev/null 2>&1 || return 1`
 
-Shell-specific code is fine when it is guarded:
+### When portability is not worth it
+
+Sometimes it is not: a completion script, or a large pile of existing bash you
+are not going to rewrite. Name the file for the shell it needs:
+
+| Extension | Sourced by |
+|---|---|
+| `NN_topic.sh` | bash and zsh |
+| `NN_topic.bash` | bash only |
+| `NN_topic.zsh` | zsh only |
+
+```sh
+knew kube --bash        # creates shell/source/50_kube.bash
+```
+
+`khelp` still lists them, labelled `(bash only)` so it is obvious why a
+function is missing in your other shell. Everything else — numbering, `#:`
+docs, overlay interleaving — works exactly the same.
+
+Shell-specific code inside a `.sh` file is also fine when guarded:
 
 ```sh
 if [ -n "${ZSH_VERSION:-}" ]; then
@@ -77,6 +96,13 @@ elif [ -n "${BASH_VERSION:-}" ]; then
   complete -F _mything mything
 fi
 ```
+
+### Two files with the same name
+
+If core and an overlay both ship `50_ssh.sh`, both are sourced: core first,
+the overlay second. So the overlay wins for any name they both define. That is
+usually what you want, but naming the overlay's copy something distinct
+(`50_ssh_work.sh`) makes it obvious to the next person, including you.
 
 ## Finding things
 

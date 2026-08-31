@@ -67,7 +67,10 @@ ks_overlay_add() {
   fi
   ks_mkdir "$KS_OVERLAY_DIR"
   ks_step "cloning overlay '$name' from $url"
-  ks_run git clone --depth 1 "$url" "$dest" || ks_die "clone failed"
+  # --recurse-submodules: overlays commonly vendor internal completion scripts
+  # and small tools as submodules.
+  ks_run git clone --depth 1 --recurse-submodules --shallow-submodules \
+    "$url" "$dest" || ks_die "clone failed"
   ks_ok "overlay '$name' added"
 }
 
@@ -86,6 +89,10 @@ ks_overlay_update() {
   for d in $(ks_overlay_dirs); do
     ks_step "updating overlay $(basename "$d")"
     ks_run git -C "$d" pull --ff-only --quiet || ks_warn "pull failed for $(basename "$d")"
+    if [ -f "$d/.gitmodules" ]; then
+      ks_run git -C "$d" submodule update --init --recursive --depth 1 ||
+        ks_warn "submodule update failed for $(basename "$d")"
+    fi
   done
 }
 

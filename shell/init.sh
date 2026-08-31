@@ -17,6 +17,10 @@
 #
 # Portability rule: these files are sourced by BOTH bash and zsh. Stick to
 # POSIX syntax. No arrays, no [[ ]], no ${x^^}, no `local -n`.
+#
+# When that is not practical -- a big pile of existing bash, a completion
+# script -- name the file NN_topic.bash (or .zsh) and it is only sourced by
+# that shell. `.sh` means both.
 
 KICKSTART_ROOT="${KICKSTART_ROOT:-$HOME/.kickstart}"
 export KICKSTART_ROOT
@@ -50,14 +54,26 @@ _ks_source_dirs() {
 }
 
 # _ks_source_files -- all helper files, sorted by basename across every dir.
+#
+# `.sh` is sourced by every shell; `.bash` and `.zsh` only by the shell they
+# name. `sort -s` (stable) matters: when core and an overlay both ship a file
+# with the same name, the tie is broken by input order, which is core first
+# and overlays after. So the overlay's copy is sourced last and wins.
+#
+# `find` rather than a glob on purpose: zsh treats an unmatched glob as an
+# error, so `for f in dir/*.bash` blows up on any directory without one.
 _ks_source_files() {
   _ks_source_dirs | while IFS= read -r _ksdir; do
     [ -d "$_ksdir" ] || continue
-    for _ksf in "$_ksdir"/*.sh; do
-      [ -f "$_ksf" ] || continue
-      printf '%s\t%s\n' "${_ksf##*/}" "$_ksf"
-    done
-  done | LC_ALL=C sort -k1,1 | cut -f2-
+    find "$_ksdir" -maxdepth 1 -type f \
+      \( -name '*.sh' -o -name '*.bash' -o -name '*.zsh' \) -print 2>/dev/null
+  done | while IFS= read -r _ksf; do
+    case "$_ksf" in
+      *.bash) [ -n "${BASH_VERSION:-}" ] || continue ;;
+      *.zsh)  [ -n "${ZSH_VERSION:-}" ] || continue ;;
+    esac
+    printf '%s\t%s\n' "${_ksf##*/}" "$_ksf"
+  done | LC_ALL=C sort -s -k1,1 | cut -f2-
 }
 
 # Source them. fd 3 keeps stdin free for anything a helper file might read,

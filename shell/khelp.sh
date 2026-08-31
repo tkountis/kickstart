@@ -33,8 +33,14 @@ while IFS= read -r dir; do
     origin=$(printf '%s' "${dir#"$DATA"/overlays/}" | cut -d/ -f1) ;;
   esac
 
-  for f in "$dir"/*.sh; do
+  for f in "$dir"/*.sh "$dir"/*.bash "$dir"/*.zsh; do
     [ -f "$f" ] || continue
+    # Files that only load in one shell are labelled as such.
+    shelltag=""
+    case "$f" in
+      *.bash) shelltag=" bash only" ;;
+      *.zsh)  shelltag=" zsh only" ;;
+    esac
     entries=$(sed -n 's/^#:[[:space:]]*//p' "$f")
     [ -z "$entries" ] && continue
     if [ -n "$FILTER" ]; then
@@ -47,8 +53,12 @@ while IFS= read -r dir; do
     [ -z "$entries" ] && continue
 
     found=1
-    if [ -n "$origin" ]; then
-      printf '\n%s%s%s %s(%s)%s\n' "$B" "$(basename "$f")" "$R" "$D" "$origin" "$R"
+    label=$origin
+    if [ -n "$shelltag" ]; then
+      if [ -n "$label" ]; then label="$label,$shelltag"; else label=${shelltag# }; fi
+    fi
+    if [ -n "$label" ]; then
+      printf '\n%s%s%s %s(%s)%s\n' "$B" "$(basename "$f")" "$R" "$D" "$label" "$R"
     else
       printf '\n%s%s%s\n' "$B" "$(basename "$f")" "$R"
     fi
