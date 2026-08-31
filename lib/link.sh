@@ -30,7 +30,7 @@ ks_link_tree() {
     target="$dest_root/$rel"
     if ks_link_file "$file" "$target"; then changed=1; fi
   done <<EOF
-$(find "$src" -type f -o -type l | sort)
+$(find "$src" \( -type f -o -type l \) -print | sort)
 EOF
 
   [ "$found" = 0 ] && return 3
@@ -77,7 +77,7 @@ ks_unlink_tree() {
       ks_run rm -f "$target"
     fi
   done <<EOF
-$(find "$src" -type f -o -type l | sort)
+$(find "$src" \( -type f -o -type l \) -print | sort)
 EOF
 }
 

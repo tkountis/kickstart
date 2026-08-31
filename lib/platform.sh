@@ -43,17 +43,22 @@ ks_detect_platform() {
   # Package manager. Homebrew wins on macOS; on Linux the native manager wins
   # (it works without internet against internal mirrors, brew does not), but
   # brew is still usable as a fallback for user-space installs.
+  #
+  # KS_PKG is the *family* (used for PKG_BREW / PKG_APT / PKG_DNF lookups),
+  # KS_PKG_BIN is the binary to actually run. They differ on Amazon Linux 2 and
+  # old CentOS, where the dnf-family manager is called yum.
   KS_PKG=none
+  KS_PKG_BIN=""
   if [ "$KS_OS" = darwin ]; then
-    KS_PKG=brew
+    KS_PKG=brew; KS_PKG_BIN=brew
   elif ks_have apt-get; then
-    KS_PKG=apt
+    KS_PKG=apt; KS_PKG_BIN=apt-get
   elif ks_have dnf; then
-    KS_PKG=dnf
+    KS_PKG=dnf; KS_PKG_BIN=dnf
   elif ks_have yum; then
-    KS_PKG=dnf
+    KS_PKG=dnf; KS_PKG_BIN=yum
   elif ks_have brew; then
-    KS_PKG=brew
+    KS_PKG=brew; KS_PKG_BIN=brew
   fi
 
   # Linuxbrew may be installed but not yet on PATH.
@@ -63,11 +68,20 @@ ks_detect_platform() {
     done
   fi
 
-  KS_HOSTNAME=$(hostname -s 2>/dev/null || hostname 2>/dev/null || printf 'unknown')
-  KS_FQDN=$(hostname -f 2>/dev/null || hostname 2>/dev/null || printf '%s' "$KS_HOSTNAME")
+  # `hostname` is missing on minimal container images; `uname -n` never is.
+  KS_HOSTNAME=$(hostname -s 2>/dev/null) ||
+    KS_HOSTNAME=$(uname -n 2>/dev/null) ||
+    KS_HOSTNAME=unknown
+  KS_HOSTNAME=${KS_HOSTNAME%%.*}
+  [ -n "$KS_HOSTNAME" ] || KS_HOSTNAME=unknown
 
-  export KS_OS KS_ARCH KS_DISTRO KS_FAMILY KS_PKG KS_HOSTNAME KS_FQDN
-  ks_debug "platform: os=$KS_OS arch=$KS_ARCH distro=$KS_DISTRO family=$KS_FAMILY pkg=$KS_PKG host=$KS_HOSTNAME"
+  KS_FQDN=$(hostname -f 2>/dev/null) ||
+    KS_FQDN=$(uname -n 2>/dev/null) ||
+    KS_FQDN=$KS_HOSTNAME
+  [ -n "$KS_FQDN" ] || KS_FQDN=$KS_HOSTNAME
+
+  export KS_OS KS_ARCH KS_DISTRO KS_FAMILY KS_PKG KS_PKG_BIN KS_HOSTNAME KS_FQDN
+  ks_debug "platform: os=$KS_OS arch=$KS_ARCH distro=$KS_DISTRO family=$KS_FAMILY pkg=$KS_PKG($KS_PKG_BIN) host=$KS_HOSTNAME"
 }
 
 # ks_platform_summary -- one line, for `status` / `doctor`.

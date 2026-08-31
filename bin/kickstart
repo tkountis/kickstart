@@ -322,7 +322,10 @@ cmd_list() {
       done
       ;;
     helpers|helper|h)
-      "$KS_ROOT/shell/khelp.sh" 2>/dev/null || ks_die "helper listing needs shell/khelp.sh"
+      shift 2>/dev/null || true
+      # khelp.sh is also the implementation behind the `khelp` shell function,
+      # so it reads KICKSTART_ROOT rather than the CLI's KS_ROOT.
+      KICKSTART_ROOT="$KS_ROOT" "$KS_ROOT/shell/khelp.sh" "$@"
       ;;
     *) ks_die "list what? modules | profiles | overlays | helpers" ;;
   esac

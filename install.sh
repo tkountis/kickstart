@@ -71,6 +71,15 @@ done
 ensure_git() {
   command -v git >/dev/null 2>&1 && return 0
   say "git is missing, installing it"
+
+  # Container images often run as root with no sudo installed.
+  local SUDO=""
+  if [ "$(id -u)" != 0 ]; then
+    command -v sudo >/dev/null 2>&1 ||
+      die "git is missing and this account cannot sudo; install git and re-run"
+    SUDO=sudo
+  fi
+
   case "$(uname -s)" in
     Darwin)
       # Command Line Tools ships git. This opens a GUI prompt and returns
@@ -81,11 +90,11 @@ ensure_git() {
       ;;
     Linux)
       if command -v apt-get >/dev/null 2>&1; then
-        sudo apt-get update -qq && sudo apt-get install -y -qq git
+        $SUDO apt-get update -qq && $SUDO apt-get install -y -qq git
       elif command -v dnf >/dev/null 2>&1; then
-        sudo dnf install -y -q git
+        $SUDO dnf install -y -q git
       elif command -v yum >/dev/null 2>&1; then
-        sudo yum install -y -q git
+        $SUDO yum install -y -q git
       else
         die "no supported package manager found; install git and re-run"
       fi

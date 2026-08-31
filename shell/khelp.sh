@@ -38,7 +38,11 @@ while IFS= read -r dir; do
     entries=$(sed -n 's/^#:[[:space:]]*//p' "$f")
     [ -z "$entries" ] && continue
     if [ -n "$FILTER" ]; then
-      entries=$(printf '%s\n' "$entries" | grep -i -- "$FILTER") || continue
+      # A filter matching the filename shows the whole topic ("khelp git" ->
+      # everything in 30_git.sh). Otherwise it filters individual entries.
+      if ! printf '%s' "$(basename "$f")" | grep -qi -- "$FILTER"; then
+        entries=$(printf '%s\n' "$entries" | grep -i -- "$FILTER") || continue
+      fi
     fi
     [ -z "$entries" ] && continue
 

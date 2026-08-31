@@ -37,7 +37,7 @@ ks_configure() {
   fi
 
   if [ "${KS_DRY_RUN:-0}" = 1 ]; then
-    ks_run "prepend '$line' to ~/.ssh/config"
+    ks_dry "prepend '$line' to ~/.ssh/config"
     return 0
   fi
 

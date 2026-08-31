@@ -105,6 +105,7 @@ Use these instead of raw commands so `--dry-run` and `--verbose` work.
 | | |
 |---|---|
 | `ks_run <cmd>...` | run a command, respecting `--dry-run` |
+| `ks_dry <text>` | under `--dry-run`, describe an action with no single command |
 | `ks_sudo <cmd>...` | same, as root when needed |
 | `ks_have <cmd>` | is a command on PATH? |
 | `ks_mkdir <dir>` | idempotent `mkdir -p` |
@@ -115,8 +116,13 @@ Use these instead of raw commands so `--dry-run` and `--verbose` work.
 | `ks_info` `ks_warn` `ks_error` `ks_chg` `ks_skip` `ks_debug` | logging |
 
 And these variables: `KS_OS`, `KS_ARCH`, `KS_DISTRO`, `KS_FAMILY`, `KS_PKG`,
-`KS_PROFILE`, `KS_HOSTNAME`, `KS_FQDN`, `KS_ROOT`, `KS_MODULE_DIR`,
-`KS_DRY_RUN`, `KS_OFFLINE`, `KS_CONFIG_DIR`, `KS_STATE_DIR`.
+`KS_PKG_BIN`, `KS_PROFILE`, `KS_HOSTNAME`, `KS_FQDN`, `KS_ROOT`,
+`KS_MODULE_DIR`, `KS_DRY_RUN`, `KS_OFFLINE`, `KS_CONFIG_DIR`, `KS_STATE_DIR`.
+
+`KS_PKG` is the manager *family* (`brew` / `apt` / `dnf` / `none`), which is
+what `PKG_*` lookups key off. `KS_PKG_BIN` is the binary to actually invoke;
+they differ on Amazon Linux 2 and old CentOS, where the dnf-family manager is
+still called `yum`.
 
 ## Apply order
 

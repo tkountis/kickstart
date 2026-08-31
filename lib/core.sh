@@ -55,11 +55,15 @@ ks_die() { ks_error "$*"; exit 1; }
 
 # ------------------------------------------------------------- execution ----
 
+# ks_dry <description> -- report an action under --dry-run that has no single
+# command to echo (a file rewrite, a block insertion).
+ks_dry() { printf '%s%sdry%s   %s\n' "$(_ks_prefix)" "$C_YELLOW" "$C_RESET" "$*" >&2; }
+
 # ks_run <cmd> [args...] -- run a command, honouring --dry-run.
 # Always logs what it is about to do, which is the whole debugging story.
 ks_run() {
   if [ "${KS_DRY_RUN:-0}" = 1 ]; then
-    printf '%s%sdry%s   %s\n' "$(_ks_prefix)" "$C_YELLOW" "$C_RESET" "$*" >&2
+    ks_dry "$*"
     return 0
   fi
   ks_debug "run: $*"
@@ -139,7 +143,7 @@ ${end}"
       return 3 # unchanged
     fi
     if [ "${KS_DRY_RUN:-0}" = 1 ]; then
-      ks_run "update block ${marker} in ${file}"
+      ks_dry "update block ${marker} in ${file}"
       return 0
     fi
     tmp=$(ks_mktemp)
@@ -155,7 +159,7 @@ ${end}"
   fi
 
   if [ "${KS_DRY_RUN:-0}" = 1 ]; then
-    ks_run "append block ${marker} to ${file}"
+    ks_dry "append block ${marker} to ${file}"
     return 0
   fi
   ks_mkdir "$(dirname "$file")"

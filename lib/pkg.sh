@@ -13,8 +13,8 @@ ks_pkg_refresh() {
   [ "${KS_OFFLINE:-0}" = 1 ] && { ks_debug "offline: skipping index refresh"; return 0; }
   case "$KS_PKG" in
     brew) ks_run brew update ;;
-    apt)  ks_sudo apt-get update -qq ;;
-    dnf)  : ;; # dnf refreshes its own metadata per transaction
+    apt)  ks_sudo "$KS_PKG_BIN" update -qq ;;
+    dnf)  : ;; # dnf/yum refresh their own metadata per transaction
     *)    : ;;
   esac
 }
@@ -49,8 +49,8 @@ ks_pkg_install() {
     ks_chg "install $pkg"
     case "$KS_PKG" in
       brew) ks_run brew install "$pkg" || rc=1 ;;
-      apt)  ks_sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "$pkg" || rc=1 ;;
-      dnf)  ks_sudo dnf install -y -q "$pkg" || rc=1 ;;
+      apt)  ks_sudo env DEBIAN_FRONTEND=noninteractive "$KS_PKG_BIN" install -y -qq "$pkg" || rc=1 ;;
+      dnf)  ks_sudo "$KS_PKG_BIN" install -y -q "$pkg" || rc=1 ;;
     esac
     [ "$rc" = 1 ] && ks_error "failed to install $pkg"
   done
