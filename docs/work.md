@@ -52,14 +52,14 @@ marked with `kickstart profile work`, which matters when the same overlay is
 also cloned somewhere it should stay dormant.
 
 ```sh
-# kickstart-work/modules/carnival/module.sh
-DESC="carnival CLI"
+# kickstart-work/modules/deploy-cli/module.sh
+DESC="the internal deploy CLI"
 REQUIRES_PROFILE="work"
 NET=1                        # internal endpoint; skipped when pushed offline
-PROVIDES="carnival"
+PROVIDES="deploy"
 
 ks_install() {
-  ks_run pip3 install --user carnival-tools
+  ks_run pip3 install --user deploy-cli --index-url "$INTERNAL_PYPI"
 }
 ```
 

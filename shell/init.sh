@@ -6,7 +6,7 @@
 # work overlay can ship 15_work_path.sh and it lands between core's 10_path.sh
 # and 20_aliases.sh without either repo knowing about the other.
 #
-# Number bands (same convention as the old dotfiles-apple repo):
+# Number bands (the convention my previous dotfiles repo used):
 #   00-09  environment and exports
 #   10-19  PATH
 #   20-29  aliases
