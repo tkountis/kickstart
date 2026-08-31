@@ -155,12 +155,34 @@ mirrors. See [docs/remote.md](docs/remote.md).
 
 ## Secrets and keys
 
-Currently: kickstart generates a per-host ssh key on request (`sshkey`) and
-sources `~/.config/kickstart/env` for machine-local exports. Private keys are
-never synced between machines.
+Private ssh keys are generated per host and never synced. Public keys are
+tracked in `keys/` so revoking a machine is a commit.
 
-An `age`-encrypted vault in the repo is designed but not yet built. The design,
-the reasoning, and the alternatives considered are written up in
+```sh
+kickstart keys new           # this host's ed25519 key
+kickstart keys track         # public half into keys/<host>.pub, for commit
+kickstart keys publish       # register it with GitHub
+kickstart keys authorized    # rebuild ~/.ssh/authorized_keys from keys/*.pub
+```
+
+Shared secrets live in an `age` vault, encrypted to those same ssh keys — no
+new key material, no daemon, no GPG:
+
+```sh
+kickstart secrets init --in <overlay>/secrets
+kickstart secrets add npm-token       # or pipe it in
+kickstart secrets edit npm-token
+kickstart secrets rekey               # after adding or removing a host
+```
+
+Modules declare what they need and `apply` materialises it:
+
+```sh
+SECRETS="npm-token:~/.npmrc:0600"
+```
+
+A host that is not a recipient skips the secret with a warning instead of
+failing the run. Full reasoning, threat model and alternatives considered:
 [docs/secrets.md](docs/secrets.md).
 
 ---
@@ -170,9 +192,11 @@ the reasoning, and the alternatives considered are written up in
 ```
 install.sh              one-line bootstrap, standalone, no dependencies
 bin/kickstart           the CLI
-lib/                    core, platform, pkg, link, module, profile, overlay
+lib/                    core, platform, pkg, link, module, profile, overlay,
+                        keys, secrets
 modules/<name>/         module.sh + files/ (a mirror of $HOME)
 profiles/<name>.profile which modules a host gets
+keys/<host>.pub         tracked public ssh keys, one per machine
 shell/init.sh           the single line your rc files source
 shell/source/NN_*.sh    shell helpers, auto-loaded in order
 shell/khelp.sh          the helper registry reader

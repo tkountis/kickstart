@@ -5,3 +5,10 @@
 # Nothing generated lives in the repo. If you find yourself adding to this
 # file, the thing you are ignoring probably belongs in
 # ~/.config/kickstart/env or ~/.local/state/kickstart instead.
+
+# Belt and braces for the secrets vault: only ciphertext and the recipient
+# list are ever tracked. A stray decrypted file cannot be committed by accident.
+secrets/*
+!secrets/*.age
+!secrets/recipients.txt
+!secrets/README.md

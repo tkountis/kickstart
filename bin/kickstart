@@ -45,6 +45,10 @@ export KS_ROOT KS_CONFIG_DIR KS_CONFIG_FILE KS_STATE_DIR KS_DATA_DIR KS_RUN_ID
 . "$KS_ROOT/lib/profile.sh"
 # shellcheck source=lib/module.sh
 . "$KS_ROOT/lib/module.sh"
+# shellcheck source=lib/keys.sh
+. "$KS_ROOT/lib/keys.sh"
+# shellcheck source=lib/secrets.sh
+. "$KS_ROOT/lib/secrets.sh"
 
 # ------------------------------------------------------------- global opts --
 
@@ -74,6 +78,9 @@ COMMANDS
   overlay <sub>          add <git-url> [name] | list | remove <name> | update
   new module <name>      Scaffold a new module.
   new helper <name>      Scaffold a new shell helper file.
+  keys <sub>             status | new [name] | track | publish | authorized
+  secrets <sub>          init | ls | add | cat | edit | rm | rekey | sync |
+                         recipients | recipient-add <pubkey>
   link | unlink          Only manage dotfiles (no installs).
   push <host> [opts]     Install kickstart on a remote host over ssh.
   reload                 Print the command to reload your shell.
@@ -96,12 +103,18 @@ EXAMPLES
   kickstart profile work                 # mark this host as a work box
   kickstart overlay add git@github.com:me/kickstart-work.git
   kickstart push build01 --profile remote
+  kickstart keys new && kickstart keys publish
+  kickstart secrets edit npm-token
 EOF
 }
 
-# Parse global options from anywhere in the argv, leaving positionals in KS_ARGS.
+# Parse global options from anywhere in the argv. Everything else -- including
+# options this parser does not know -- lands in KS_ARGV for the subcommand to
+# deal with. Subcommands that take their own flags (push, secrets, keys)
+# validate them and reject the rest, so typos still get caught; they just get
+# caught by the layer that knows what is valid.
 parse_args() {
-  KS_ARGS=""
+  KS_ARGV=()
   while [ $# -gt 0 ]; do
     case "$1" in
       -n|--dry-run)   KS_DRY_RUN=1 ;;
@@ -114,13 +127,22 @@ parse_args() {
       --skip)         shift; KS_SKIP=$(printf '%s' "${1:-}" | tr ',' ' ') ;;
       --skip=*)       KS_SKIP=$(printf '%s' "${1#--skip=}" | tr ',' ' ') ;;
       -h|--help)      usage; exit 0 ;;
-      --)             shift; while [ $# -gt 0 ]; do KS_ARGS="$KS_ARGS $1"; shift; done; break ;;
-      -*)             ks_die "unknown option: $1 (try --help)" ;;
-      *)              KS_ARGS="$KS_ARGS $1" ;;
+      --)             shift; while [ $# -gt 0 ]; do KS_ARGV+=("$1"); shift; done; break ;;
+      *)              KS_ARGV+=("$1") ;;
     esac
     shift
   done
   export KS_DRY_RUN KS_VERBOSE KS_YES KS_OFFLINE KS_FILES_ONLY
+}
+
+# ks_no_flags <context> <args...> -- for subcommands that take no options of
+# their own, so an unrecognised flag is an error rather than a "module".
+ks_no_flags() {
+  local ctx=$1 a
+  shift
+  for a in "$@"; do
+    case "$a" in -*) ks_die "$ctx: unknown option '$a' (try --help)" ;; esac
+  done
 }
 
 # ------------------------------------------------------------------ setup ---
@@ -166,6 +188,13 @@ cmd_apply() {
     rc=$?
     ks_module_tally "$rc" "$m"
   done
+
+  # Materialise any secrets the applied modules declare. Silent no-op when
+  # this host has no vault, which is the normal case on a shared box.
+  if ks_have age && [ -f "$(ks_vault_dir)/recipients.txt" ]; then
+    # shellcheck disable=SC2086  # deliberate word splitting of the module list
+    ks_secrets_sync $modules
+  fi
 
   KS_SCOPE=""
   printf '\n' >&2
@@ -354,6 +383,37 @@ cmd_overlay() {
     update) ks_overlay_update ;;
     list)   cmd_list overlays ;;
     *)      ks_die "overlay: add | list | remove | update" ;;
+  esac
+}
+
+# -------------------------------------------------------- keys and secrets --
+
+cmd_keys() {
+  local sub=${1:-status}; shift 2>/dev/null || true
+  case "$sub" in
+    status|st)   ks_keys_status ;;
+    new)         ks_keys_new "${1:-}" ;;
+    track)       ks_keys_track "${1:-}" ;;
+    publish)     ks_keys_publish "${1:-}" ;;
+    authorized)  ks_keys_authorized ;;
+    *) ks_die "keys: status | new [name] | track | publish | authorized" ;;
+  esac
+}
+
+cmd_secrets() {
+  local sub=${1:-ls}; shift 2>/dev/null || true
+  case "$sub" in
+    init)          ks_secrets_init "$@" ;;
+    ls|list)       ks_secrets_ls ;;
+    add)           ks_secrets_add "$@" ;;
+    cat|show)      ks_secrets_cat "${1:-}" ;;
+    edit)          ks_secrets_edit "${1:-}" ;;
+    rm|remove)     ks_secrets_rm "${1:-}" ;;
+    rekey)         ks_secrets_rekey ;;
+    sync)          ks_secrets_sync "$@" ;;
+    recipients)    ks_secrets_recipients ;;
+    recipient-add) ks_vault_require; ks_secrets_recipient_add "${1:?usage: secrets recipient-add <pubkey file>}" ;;
+    *) ks_die "secrets: init | ls | add | cat | edit | rm | rekey | sync | recipients | recipient-add" ;;
   esac
 }
 
@@ -552,11 +612,10 @@ main() {
   [ $# -eq 0 ] && { usage; exit 0; }
   local cmd=$1; shift
   parse_args "$@"
-  # shellcheck disable=SC2086
-  set -- $KS_ARGS
+  set -- ${KS_ARGV[@]+"${KS_ARGV[@]}"}
 
   case "$cmd" in
-    apply|a)   bootstrap_env; cmd_apply "$@" ;;
+    apply|a)   ks_no_flags apply "$@"; bootstrap_env; cmd_apply "$@" ;;
     update|up) bootstrap_env; cmd_update ;;
     status|st) bootstrap_env; cmd_status ;;
     doctor|dr) bootstrap_env; cmd_doctor ;;
@@ -564,8 +623,10 @@ main() {
     profile)   bootstrap_env; cmd_profile "$@" ;;
     overlay)   bootstrap_env; cmd_overlay "$@" ;;
     new)       bootstrap_env; cmd_new "$@" ;;
-    link)      bootstrap_env; cmd_link "$@" ;;
-    unlink)    bootstrap_env; cmd_unlink "$@" ;;
+    keys)      bootstrap_env; cmd_keys "$@" ;;
+    secrets)   bootstrap_env; cmd_secrets "$@" ;;
+    link)      ks_no_flags link "$@"; bootstrap_env; cmd_link "$@" ;;
+    unlink)    ks_no_flags unlink "$@"; bootstrap_env; cmd_unlink "$@" ;;
     push)      bootstrap_env; cmd_push "$@" ;;
     reload)    cmd_reload ;;
     version|--version|-V) bootstrap_env; cmd_version ;;

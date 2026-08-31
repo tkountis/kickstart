@@ -7,5 +7,6 @@
 # ever apply on hosts marked with `kickstart profile work`.
 @include base
 
+gh
 direnv
 macos-defaults

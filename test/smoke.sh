@@ -33,6 +33,11 @@ section() { printf '\n%s\n' "$1"; }
 # match and the producer is still writing. Match against a captured string.
 has() { printf '%s\n' "$1" | grep -q -- "$2"; }
 
+# filemode <path> -- octal permissions, portably.
+filemode() {
+  if [ "$(uname -s)" = Darwin ]; then stat -f '%OLp' "$1"; else stat -c '%a' "$1"; fi
+}
+
 # Every invocation runs against the sandbox home.
 ks() {
   env HOME="$SANDBOX/home" \
@@ -194,6 +199,100 @@ order=$(env HOME="$SANDBOX/home" KICKSTART_ROOT="$ROOT" KICKSTART_TRACE=1 \
   bash -c '. "$KICKSTART_ROOT/shell/init.sh"' 2>&1 | sed 's|.*/||')
 expected=$(printf '%s\n' "$order" | LC_ALL=C sort)
 [ "$order" = "$expected" ]; check $? "helper files load in filename order across repos"
+
+# --------------------------------------------------------------------------
+section "keys"
+# Work against the *cloned* overlay, which is what kickstart actually reads.
+# (A real workflow would commit to $OV and `kickstart overlay update`.)
+OVC="$SANDBOX/home/.local/share/kickstart/overlays/testov"
+mkdir -p "$OVC/keys"
+ks keys new -y >/dev/null 2>&1; check $? "keys new generates an ed25519 key"
+[ -f "$SANDBOX/home/.ssh/id_ed25519" ]; check $? "private key created"
+[ "$(filemode "$SANDBOX/home/.ssh/id_ed25519")" = 600 ]
+check $? "private key is mode 600"
+ks keys status >/dev/null 2>&1; check $? "keys status runs"
+
+ks keys track >/dev/null 2>&1; check $? "keys track copies the public key"
+[ -n "$(ls "$OVC"/keys/*.pub 2>/dev/null)" ]
+check $? "public key tracked in the overlay"
+# Tracking must never copy the private half.
+[ -z "$(find "$OVC/keys" -type f ! -name '*.pub' 2>/dev/null)" ]
+check $? "no private key material tracked"
+
+ks keys authorized >/dev/null 2>&1; check $? "keys authorized rebuilds the file"
+auth="$SANDBOX/home/.ssh/authorized_keys"
+grep -q 'kickstart:keys' "$auth" 2>/dev/null; check $? "authorized_keys has our block"
+grep -q "$(awk '{print $2}' <"$SANDBOX/home/.ssh/id_ed25519.pub")" "$auth"
+check $? "authorized_keys contains the key"
+# Content outside our block must survive a rebuild.
+printf 'ssh-ed25519 AAAAsomeoneelse other@host\n' >>"$auth"
+ks keys authorized >/dev/null 2>&1
+grep -q 'other@host' "$auth"; check $? "pre-existing authorized_keys entries preserved"
+
+# --------------------------------------------------------------------------
+section "secrets (age vault)"
+if ! command -v age >/dev/null 2>&1; then
+  printf '  %sskip%s age not installed\n' "$DIM" "$RST"
+else
+  ks secrets init --in "$OVC/secrets" -y >/dev/null 2>&1
+  check $? "secrets init creates a vault"
+  [ -f "$OVC/secrets/recipients.txt" ]; check $? "recipients.txt created"
+  recips=$(ks secrets recipients 2>/dev/null)
+  has "$recips" "$(uname -n | cut -d. -f1)"; check $? "this host is a recipient"
+
+  printf 'TOKEN=hunter2\n' | ks secrets add tok >/dev/null 2>&1
+  check $? "secrets add from stdin"
+  [ -f "$OVC/secrets/tok.age" ]; check $? "ciphertext written"
+  # The whole point: the plaintext must not be recoverable from the file.
+  refute "plaintext is not in the ciphertext" grep -q 'hunter2' "$OVC/secrets/tok.age"
+
+  out=$(ks secrets cat tok 2>/dev/null)
+  [ "$out" = "TOKEN=hunter2" ]; check $? "secrets cat round-trips"
+
+  listing=$(ks secrets ls 2>/dev/null); has "$listing" 'tok'; check $? "secrets ls shows it"
+  ks secrets rekey >/dev/null 2>&1; check $? "secrets rekey runs"
+  out=$(ks secrets cat tok 2>/dev/null)
+  [ "$out" = "TOKEN=hunter2" ]; check $? "still decryptable after rekey"
+
+  # A module declaring SECRETS= gets it materialised during apply.
+  mkdir -p "$OVC/modules/withsecret"
+  cat >"$OVC/modules/withsecret/module.sh" <<'EOF'
+DESC="module with a secret"
+SECRETS="tok:~/.tokrc:0600"
+ks_check() { return 0; }
+ks_install() { return 0; }
+EOF
+  printf '@include minimal\nwithsecret\n' >"$OVC/profiles/sec.profile"
+  ks apply --files-only --profile sec -y >/dev/null 2>&1
+  [ -f "$SANDBOX/home/.tokrc" ]; check $? "SECRETS= materialised during apply"
+  [ "$(cat "$SANDBOX/home/.tokrc" 2>/dev/null)" = "TOKEN=hunter2" ]
+  check $? "materialised content is correct"
+  [ "$(filemode "$SANDBOX/home/.tokrc")" = 600 ]
+  check $? "materialised with the declared mode"
+  out=$(ks apply --files-only --profile sec -y 2>&1)
+  has "$out" 'done: 0 changed'; check $? "re-apply does not rewrite the secret"
+
+  # A host that is not a recipient must skip the secret, not fail the run.
+  ssh-keygen -q -t ed25519 -N '' -f "$SANDBOX/home/.ssh/stranger" </dev/null
+  printf 'KICKSTART_AGE_IDENTITY="%s"\n' "$SANDBOX/home/.ssh/stranger" \
+    >>"$SANDBOX/home/.config/kickstart/config"
+  rm -f "$SANDBOX/home/.tokrc"
+  out=$(ks apply --files-only --profile sec -y 2>&1); rc=$?
+  [ "$rc" = 0 ]; check $? "non-recipient host does not fail the run"
+  has "$out" 'cannot decrypt'; check $? "non-recipient host warns and skips"
+  [ ! -f "$SANDBOX/home/.tokrc" ]; check $? "no half-written secret left behind"
+  refute "secrets cat fails cleanly for a non-recipient" ks secrets cat tok
+
+  # Put the real identity back and confirm it works again.
+  grep -v KICKSTART_AGE_IDENTITY "$SANDBOX/home/.config/kickstart/config" \
+    >"$SANDBOX/cfg" && mv "$SANDBOX/cfg" "$SANDBOX/home/.config/kickstart/config"
+  ks apply --files-only --profile sec -y >/dev/null 2>&1
+  [ -f "$SANDBOX/home/.tokrc" ]; check $? "recipient host still gets the secret"
+
+  # Nothing decrypted may be left lying around in the vault.
+  [ -z "$(find "$OVC/secrets" -type f ! -name '*.age' ! -name 'recipients.txt')" ]
+  check $? "no plaintext left in the vault directory"
+fi
 
 # --------------------------------------------------------------------------
 section "doctor"

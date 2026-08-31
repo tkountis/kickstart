@@ -5,3 +5,4 @@ core-cli
 ssh
 tmux
 neovim
+age          # needed by the secrets vault; harmless if you never use one

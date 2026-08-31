@@ -1,14 +1,7 @@
-# Secrets and keys — design
+# Secrets and keys
 
-**Status: designed, not implemented.** The `sshkey` / `sshcp` helpers and
-`~/.config/kickstart/env` exist today. Everything under "Proposed" below is a
-plan to review, not shipped code.
-
----
-
-## Three problems that get confused
-
-It is worth separating them, because the right answer is different for each.
+Three problems that get confused, and are worth separating because the right
+answer differs for each:
 
 1. **SSH private keys.** Should never be copied between machines at all.
 2. **Shared secrets that genuinely need to exist on several hosts** — a signing
@@ -16,7 +9,7 @@ It is worth separating them, because the right answer is different for each.
 3. **Short-lived credentials** — cloud STS tokens, SSO sessions, kerberos
    tickets. Not kickstart's job; a tool already owns each of these.
 
-kickstart should solve (1) and (2), and stay out of (3).
+kickstart solves (1) and (2), and stays out of (3).
 
 ---
 
@@ -24,64 +17,139 @@ kickstart should solve (1) and (2), and stay out of (3).
 
 A private key that exists on four machines is four times as likely to leak and
 cannot be revoked without disrupting all four. The alternative costs nothing:
-
-- Every host generates its own `ed25519` key on first apply.
-- Only **public** keys travel. They are not secret and can live in the repo.
-- Revoking a laptop is deleting one line from `authorized_keys` / GitHub.
-
-Already available:
+every host generates its own `ed25519` key, only public keys travel, and
+revoking a laptop is deleting one line.
 
 ```sh
-sshkey                 # create this host's key if absent, print the public half
-sshcp <host>           # copy it to a remote authorized_keys
-sshfp <host>           # show a remote host's fingerprints before trusting it
+kickstart keys status        # every key here, its fingerprint, agent state, file modes
+kickstart keys new           # generate, commented with host and date
+kickstart keys track         # copy the PUBLIC key into keys/<host>.pub for commit
+kickstart keys publish       # register it with GitHub via gh
+kickstart keys authorized    # rebuild ~/.ssh/authorized_keys from keys/*.pub
 ```
 
-`modules/ssh` already sets `IdentitiesOnly yes`, `AddKeysToAgent yes`,
-`ForwardAgent no`, and connection multiplexing.
+`keys/` lives in the repo, or in an overlay if one has that directory (overlay
+wins, as everywhere else). It holds one `.pub` per machine, so "this laptop is
+gone" becomes a commit rather than an archaeology exercise across every
+`authorized_keys` you have ever touched.
 
-### Proposed additions
+`keys authorized` only manages its own marked block, so an entry your host
+provider or work tooling put there survives a rebuild.
 
-```sh
-kickstart keys status          # every key on this host, type, age, where it is used
-kickstart keys new [name]      # generate, with a host-and-date comment
-kickstart keys publish         # push the public key to GitHub via `gh`
-kickstart keys authorized      # rebuild ~/.ssh/authorized_keys from keys/*.pub in the repo
-```
+`modules/ssh` sets `IdentitiesOnly yes`, `AddKeysToAgent yes`,
+`ForwardAgent no`, and connection multiplexing. From the shell: `keys`,
+`sshkey`, `sshcp <host>`, `sshfp <host>`, `sshforget <host>`.
 
-`keys/` in the repo (or overlay) holds one `.pub` per machine. `authorized`
-rebuilds `authorized_keys` from it, which makes "this laptop is gone" a commit.
-
-For work, if the org runs an SSH CA, certificates beat all of this — short
-lived, centrally revocable, no `authorized_keys` sprawl. That belongs in the
-work overlay, since the CA endpoint is internal.
-
-Hardware keys (`ssh-keygen -t ed25519-sk`, YubiKey) work with everything above
-and are worth it for the identity that guards the secret vault below.
+If your org runs an SSH CA, certificates beat all of this — short lived,
+centrally revocable, no `authorized_keys` sprawl. That belongs in the work
+overlay, since the CA endpoint is internal.
 
 ---
 
-## 2. Shared secrets: `age` vault in the repo
+## 2. Shared secrets: the age vault
 
-### Recommendation
+[`age`](https://github.com/FiloSottile/age): one static binary, no daemon, no
+keyring, no agent to debug at 11pm.
 
-[`age`](https://github.com/FiloSottile/age) — a single static binary, no
-daemon, no keyring, no agent. Encrypted files are committed; plaintext never
-touches the repo.
+The reason it fits here specifically is that **age accepts ssh keys as
+recipients**. There is no new key material to manage — the per-host ssh key
+from part 1 *is* the decryption identity. Onboarding a machine is generating
+its ssh key and adding the public half to the recipients list, which is
+already the workflow for git access.
 
-The reason it fits here specifically: **age accepts SSH keys as recipients.**
-
-```sh
-age -R ~/.ssh/id_ed25519.pub -o secret.age secret.txt   # encrypt
-age -d -i ~/.ssh/id_ed25519 secret.age                  # decrypt
+```
+<vault>/recipients.txt    one ssh public key per line, one per host
+<vault>/<name>.age        ciphertext, safe to commit
 ```
 
-So there is no new key material to manage. The per-host SSH key from part 1
-*is* the decryption identity. A new machine is onboarded by generating its ssh
-key and adding the public half to the recipients list — exactly the workflow
-that already exists for git access.
+### Setting it up
 
-### Alternatives considered
+Put the vault in a **private** repo — normally your work overlay:
+
+```sh
+kickstart apply age
+kickstart secrets init --in ~/.local/share/kickstart/overlays/work/secrets
+```
+
+`init` registers this host's public key as a recipient and pins the vault path
+in `~/.config/kickstart/config`. Pointing a vault at the public kickstart repo
+prompts for confirmation first, because ciphertext in a public repo is public
+forever: if a key is ever compromised, every secret ever committed must be
+rotated.
+
+### Using it
+
+```sh
+kickstart secrets ls                     # what is in the vault, and how many recipients
+kickstart secrets add npm-token          # opens $EDITOR
+echo "$TOKEN" | kickstart secrets add ci-token   # or pipe it, never touching disk
+kickstart secrets cat npm-token
+kickstart secrets edit npm-token         # decrypt to a 0700 tmpdir, edit, re-encrypt
+kickstart secrets rm npm-token
+kickstart secrets recipients             # who can decrypt
+kickstart secrets rekey                  # re-encrypt everything to the current list
+```
+
+From the shell: `secrets`, `secret <name>`, `secedit <name>`, and
+`secenv <name>` which exports a secret's `KEY=value` lines into the current
+shell without the plaintext ever reaching disk.
+
+### Module integration
+
+A module declares what it needs, in the same style as everything else:
+
+```sh
+# modules/npm-work/module.sh
+DESC="npm against the internal registry"
+SECRETS="npm-token:~/.npmrc:0600"
+```
+
+`<vault name>:<destination>:<mode>`, space separated for several. `kickstart
+apply` materialises them after linking files: decryption writes to a temp file
+next to the destination, gets the declared mode, and is moved into place only
+if the content changed. It never lands in the repo and never in a world
+readable `/tmp`.
+
+A host that cannot decrypt — no identity, or not a recipient — **skips** the
+secret with a warning rather than failing the run. A build box should not need
+the vault to get its dotfiles. That behaviour is covered by the test suite.
+
+You can also run it on its own: `kickstart secrets sync [module...]`.
+
+### Onboarding and offboarding
+
+```
+new machine   kickstart keys new
+              add the pubkey to recipients.txt   (or: secrets recipient-add <file>)
+              kickstart secrets rekey && commit
+
+lost machine  remove its line from recipients.txt
+              kickstart secrets rekey && commit
+              ROTATE every secret it could read
+```
+
+That last step is not optional. Removing a recipient stops them decrypting
+*future* ciphertext; anything they already had a copy of is compromised.
+
+### What must never go in the vault
+
+- Anything with a real secrets manager behind it (cloud creds, SSO tokens)
+- Anything with a short TTL — you will not rekey often enough
+- Work secrets, in the public repo. Overlay only.
+
+### Known limits
+
+- `rm` on an SSD is not a secure erase. The 0700 temp directory used by
+  `secrets edit` defends against other users and stray backups, not against
+  forensic recovery.
+- age does not talk to `ssh-agent`. A passphrase-protected ssh key means age
+  prompts for the passphrase on every decrypt, including during `apply`.
+- `secrets rekey` rewrites files in place; git history keeps the old
+  ciphertext, which is the point of rotating rather than just rekeying.
+
+---
+
+## Alternatives considered
 
 | | Why not |
 |---|---|
@@ -94,84 +162,12 @@ that already exists for git access.
 `age` can be layered *under* 1Password later — store the age identity in
 1Password and fetch it once per machine — without changing anything else.
 
-### Proposed layout
+## Still open
 
-```
-secrets/
-  recipients.txt      one age/ssh public key per line, commented with the host
-  <name>.age          encrypted blobs
-```
-
-**Put this in the private overlay, not the public repo.** Ciphertext in a
-public repo is public forever; if a key is ever compromised, every secret that
-was ever committed must be rotated. Keeping the vault private makes that a
-defence-in-depth problem rather than a certainty.
-
-### Proposed commands
-
-```sh
-kickstart secrets init           # register this host's ssh pubkey as a recipient
-kickstart secrets add <name>     # read stdin (or $EDITOR), encrypt to all recipients
-kickstart secrets edit <name>    # decrypt to a temp file, edit, re-encrypt, shred
-kickstart secrets cat <name>     # decrypt to stdout
-kickstart secrets ls             # names, recipients, last modified
-kickstart secrets rekey          # re-encrypt everything to the current recipient list
-kickstart secrets sync           # materialise declared secrets onto this host
-```
-
-### Proposed module integration
-
-Declarative, in the same style as everything else:
-
-```sh
-# modules/npm-work/module.sh
-SECRETS="npm-token:~/.npmrc:0600"
-```
-
-`<vault name>:<destination>:<mode>`. During apply, `sync` decrypts to the
-destination with the given mode. Decryption goes straight to the final path,
-never into the repo and never into `/tmp` unencrypted.
-
-A host that cannot decrypt (no identity, or not a recipient) **skips** the
-secret with a warning rather than failing the run — the same rule as every
-other gate. A build box should not need the vault to get its dotfiles.
-
-### Onboarding and offboarding
-
-```
-new machine   -> sshkey -> add pubkey to recipients.txt -> secrets rekey -> commit
-lost machine  -> remove from recipients.txt -> secrets rekey -> ROTATE the secrets
-```
-
-That last step is not optional. Removing a recipient stops them decrypting
-*future* ciphertext; anything they already had a copy of is compromised.
-
-### What must never go in the vault
-
-- Anything with a real secrets manager behind it (cloud creds, SSO tokens)
-- Anything with a short TTL — you will not rekey often enough
-- Work secrets, in the public repo. Overlay only.
-
----
-
-## Rollout
-
-| Phase | Scope |
-|---|---|
-| 1 (done) | Per-host ssh keys, hardened ssh config, `~/.config/kickstart/env` for machine-local values |
-| 2 | `kickstart keys` — status, publish, `authorized_keys` from the repo |
-| 3 | `kickstart secrets` — age vault, add/edit/cat/rekey, in the overlay |
-| 4 | `SECRETS=` declaration in modules, wired into apply |
-| 5 | Optional: age identity held on a YubiKey via `age-plugin-yubikey` |
-
-Nothing before phase 3 requires a decision. Phase 3 is the one worth a
-conversation, mainly about where the vault lives.
-
-## Open questions
-
-- Vault in the work overlay only, or a second personal-but-private repo too?
-- Is a YubiKey in the picture? It changes the identity story for the better,
-  but means every host needs the plugin binary.
-- Should `apply` decrypt secrets by default, or only on explicit
-  `kickstart secrets sync`? Default-on is convenient; default-off means an
-  `apply` on a shared box never materialises plaintext by accident.
+- **YubiKey.** `age-plugin-yubikey` would move the identity onto hardware,
+  which is the right answer for the key that guards everything else. It means
+  every host needs the plugin binary, so it is a deliberate decision rather
+  than a default.
+- **Should `apply` decrypt by default?** It does today, which is convenient.
+  Default-off would mean an `apply` on a shared box never materialises
+  plaintext by accident. Easy to flip if you want it.
