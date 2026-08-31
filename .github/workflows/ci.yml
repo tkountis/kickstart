@@ -26,6 +26,9 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update -qq && sudo apt-get install -y -qq zsh
       - run: ./test/smoke.sh
+      # Exercises install.sh, the git clone path, and whether a LOGIN shell
+      # actually reaches kickstart -- the failure mode assertions miss.
+      - run: ./test/sandbox.sh --dirty --no-shell
 
   # The real test of a bootstrap script is a machine that has never seen it.
   bootstrap:

@@ -39,13 +39,25 @@ ks_configure() {
   done
   [ "$rc_found" = 1 ] || ks_warn "no rc files were wired"
 
-  # macOS login shells read .bash_profile and ignore .bashrc unless told.
-  if [ -f "$HOME/.bash_profile" ] &&
-     ! grep -qE '(\.|source)[[:space:]]+.*\.bashrc' "$HOME/.bash_profile"; then
+  # A bash *login* shell reads the first of .bash_profile / .bash_login /
+  # .profile that exists, and never .bashrc unless one of them says so. On
+  # macOS every new terminal window is a login shell; on a fresh Linux box
+  # .bash_profile often does not exist at all. Get this wrong and kickstart
+  # silently never loads, which is a maddening thing to debug.
+  local login_file="" f
+  for f in "$HOME/.bash_profile" "$HOME/.bash_login" "$HOME/.profile"; do
+    [ -f "$f" ] && { login_file=$f; break; }
+  done
+  # Nothing exists yet: create the one bash looks at first.
+  [ -n "$login_file" ] || login_file="$HOME/.bash_profile"
+
+  # Strip comments before checking, so a commented-out example does not count.
+  if ! sed 's/#.*//' "$login_file" 2>/dev/null |
+       grep -qE '(\.|source)[[:space:]]+[^[:space:]]*\.bashrc'; then
     # shellcheck disable=SC2016  # this text is evaluated later, by bash itself
-    if ks_ensure_block "$HOME/.bash_profile" bash_profile \
+    if ks_ensure_block "$login_file" bash_profile \
       '[ -n "$BASH_VERSION" ] && [ -r "$HOME/.bashrc" ] && . "$HOME/.bashrc"'; then
-      ks_chg "made .bash_profile source .bashrc"
+      ks_chg "made $(ks_relpath "$login_file") source .bashrc"
       ks_touched
     fi
   fi

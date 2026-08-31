@@ -204,7 +204,10 @@ shell/init.sh           the single line your rc files source
 shell/source/NN_*.sh    shell helpers, auto-loaded in order
 shell/khelp.sh          the helper registry reader
 docs/                   the longer explanations
-test/smoke.sh           end to end tests against a throwaway $HOME
+CLAUDE.md               working rules and conventions for this repo
+test/smoke.sh           assertions against a throwaway $HOME
+test/sandbox.sh         interactive throwaway $HOME
+test/docker.sh          disposable Linux container, real installs
 ```
 
 ---
@@ -242,13 +245,32 @@ one-line profile in `~/.config/kickstart/config`, and the backups directory.
 
 ---
 
+## Trying it without touching your machine
+
+```sh
+make dry         # what would an apply do here? changes nothing
+make test        # ~95 assertions against a throwaway $HOME
+make sandbox     # interactive login shell in a throwaway $HOME
+make docker      # full bootstrap incl. installs, in a disposable container
+```
+
+`make sandbox` runs the real `install.sh` into a `mktemp -d` home and drops you
+into a login shell inside it — type `khelp`, break things, `exit`, and it is
+gone. `make docker` is the only one that also isolates package installs, and
+the only way to exercise the Linux paths from a Mac.
+
+Full detail, including exactly what a `$HOME` override does *not* isolate:
+[docs/testing.md](docs/testing.md).
+
 ## Hacking
 
 ```sh
-make test        # smoke tests against a throwaway $HOME
-make lint        # shellcheck everything
-make check       # both
+make check       # lint + tests; run before committing
+make help        # every target
 ```
+
+Conventions, the return-code protocol, and a list of portability traps already
+paid for: [CLAUDE.md](CLAUDE.md).
 
 Adding a tool you want everywhere:
 

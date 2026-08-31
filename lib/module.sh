@@ -76,6 +76,7 @@ ks_module_apply() {
     DESC=""; TAGS=""; PROVIDES=""
     PKG_BREW=""; PKG_APT=""; PKG_DNF=""; CASK=""
     REQUIRES_OS=""; REQUIRES_PROFILE=""; REQUIRES_CMD=""; NET=0
+    SANDBOX_UNSAFE=0
 
     if [ -f "$path/module.sh" ]; then
       # shellcheck disable=SC1090
@@ -94,6 +95,14 @@ ks_module_apply() {
     done
     if [ "$NET" = 1 ] && [ "${KS_OFFLINE:-0}" = 1 ]; then
       ks_skip "needs direct internet, running offline"; exit "$KS_RC_SKIP"
+    fi
+    # Some things cannot be sandboxed by overriding $HOME. On macOS, `defaults
+    # write` goes through cfprefsd to the real user's preferences no matter
+    # what $HOME says, and `killall Dock` restarts the actual desktop. Modules
+    # that reach outside $HOME like that declare SANDBOX_UNSAFE=1 and are
+    # skipped by test/sandbox.sh.
+    if [ "$SANDBOX_UNSAFE" = 1 ] && [ "${KICKSTART_SANDBOX:-0}" = 1 ]; then
+      ks_skip "touches state outside \$HOME; skipped in a sandbox"; exit "$KS_RC_SKIP"
     fi
 
     changed=0

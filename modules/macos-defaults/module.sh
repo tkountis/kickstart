@@ -7,6 +7,12 @@ DESC="Opinionated macOS system defaults"
 TAGS="os"
 REQUIRES_OS="darwin"
 
+# `defaults write` talks to cfprefsd, which serves the real logged-in user's
+# preferences regardless of $HOME -- and this module restarts Finder and the
+# Dock. Overriding $HOME does not contain any of that, so never run it in a
+# test sandbox.
+SANDBOX_UNSAFE=1
+
 ks_check() { return 0; }
 ks_install() { return 0; }
 

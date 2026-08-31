@@ -78,6 +78,30 @@ grep -q 'kickstart:shell' "$SANDBOX/home/.zshrc"  2>/dev/null; check $? ".zshrc 
 grep -q 'Include ~/.ssh/config.d' "$SANDBOX/home/.ssh/config" 2>/dev/null
 check $? "ssh config Include added"
 
+# A bash LOGIN shell reads .bash_profile and never .bashrc unless told. On a
+# fresh $HOME neither file exists, so without this kickstart silently never
+# loads -- which is how you lose an afternoon.
+[ -f "$SANDBOX/home/.bash_profile" ]; check $? ".bash_profile created on a fresh home"
+grep -q '\.bashrc' "$SANDBOX/home/.bash_profile" 2>/dev/null
+check $? ".bash_profile sources .bashrc"
+
+for sh in bash zsh; do
+  command -v "$sh" >/dev/null 2>&1 || continue
+  env HOME="$SANDBOX/home" "$sh" -l -i -c 'command -v khelp >/dev/null' >/dev/null 2>&1
+  check $? "$sh login shell reaches kickstart"
+done
+
+# A module that reaches outside $HOME must not run under KICKSTART_SANDBOX=1.
+out=$(env KICKSTART_SANDBOX=1 HOME="$SANDBOX/home" \
+      XDG_CONFIG_HOME="$SANDBOX/home/.config" \
+      XDG_STATE_HOME="$SANDBOX/home/.local/state" \
+      XDG_DATA_HOME="$SANDBOX/home/.local/share" \
+      "$ROOT/bin/kickstart" apply macos-defaults -y 2>&1)
+case "$(uname -s)" in
+  Darwin) has "$out" 'skipped in a sandbox'; check $? "SANDBOX_UNSAFE module skipped in a sandbox" ;;
+  *)      has "$out" 'requires os'; check $? "os-gated module still skipped first" ;;
+esac
+
 # The link must point at the repo, not be a copy.
 [ "$(readlink "$SANDBOX/home/.tmux.conf")" = "$ROOT/modules/tmux/files/.tmux.conf" ]
 check $? "symlink points back at the repo"
