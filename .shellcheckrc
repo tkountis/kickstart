@@ -1,0 +1,19 @@
+# shellcheck configuration for kickstart.
+
+# Sourced paths are resolved at runtime from $KS_ROOT; shellcheck cannot follow
+# them statically. `make lint` passes -x so it follows what it can.
+disable=SC1091
+
+# Module files are declarative: DESC, PROVIDES, PKG_* and friends are consumed
+# by lib/module.sh after sourcing, not by the module itself. Same for KS_SCOPE,
+# which lib/core.sh reads.
+disable=SC2034
+
+# `[ -f foo ]; check $?` is the assertion idiom in test/smoke.sh and in
+# `kickstart doctor`. It is deliberate and readable.
+disable=SC2319
+
+# Functions invoked from a trap or from a sourced context look unused.
+disable=SC2329
+
+external-sources=true

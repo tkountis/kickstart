@@ -1,0 +1,7 @@
+.DS_Store
+*.swp
+*~
+
+# Nothing generated lives in the repo. If you find yourself adding to this
+# file, the thing you are ignoring probably belongs in
+# ~/.config/kickstart/env or ~/.local/state/kickstart instead.

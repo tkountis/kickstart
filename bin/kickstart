@@ -1,0 +1,574 @@
+#!/usr/bin/env bash
+#
+# kickstart -- bring any box up to speed with one command.
+#
+# Note on shell options: we use `set -u` and `pipefail` but deliberately NOT
+# `set -e`. Return codes carry meaning here (0=changed, 3=ok, 4=skipped) and
+# `-e` turns that into an unreadable control flow. Every call site checks its
+# own status instead.
+
+set -uo pipefail
+
+# ------------------------------------------------------------------ paths ---
+
+_ks_resolve_root() {
+  local src=${BASH_SOURCE[0]} dir
+  while [ -L "$src" ]; do
+    dir=$(cd -P "$(dirname "$src")" && pwd)
+    src=$(readlink "$src")
+    case "$src" in /*) ;; *) src="$dir/$src" ;; esac
+  done
+  cd -P "$(dirname "$src")/.." && pwd
+}
+
+KS_ROOT=${KICKSTART_ROOT:-$(_ks_resolve_root)}
+KS_CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/kickstart"
+KS_CONFIG_FILE="$KS_CONFIG_DIR/config"
+KS_STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/kickstart"
+KS_DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/kickstart"
+KS_RUN_ID=$(date +%Y%m%d-%H%M%S)
+KS_VERSION="0.1.0"
+
+export KS_ROOT KS_CONFIG_DIR KS_CONFIG_FILE KS_STATE_DIR KS_DATA_DIR KS_RUN_ID
+
+# shellcheck source=lib/core.sh
+. "$KS_ROOT/lib/core.sh"
+# shellcheck source=lib/platform.sh
+. "$KS_ROOT/lib/platform.sh"
+# shellcheck source=lib/pkg.sh
+. "$KS_ROOT/lib/pkg.sh"
+# shellcheck source=lib/link.sh
+. "$KS_ROOT/lib/link.sh"
+# shellcheck source=lib/overlay.sh
+. "$KS_ROOT/lib/overlay.sh"
+# shellcheck source=lib/profile.sh
+. "$KS_ROOT/lib/profile.sh"
+# shellcheck source=lib/module.sh
+. "$KS_ROOT/lib/module.sh"
+
+# ------------------------------------------------------------- global opts --
+
+KS_DRY_RUN=0
+KS_VERBOSE=0
+KS_YES=0
+KS_OFFLINE=0
+KS_FILES_ONLY=0
+KS_PROFILE=""
+KS_SKIP=""
+
+usage() {
+  cat <<'EOF'
+kickstart -- bootstrap and maintain a working environment.
+
+USAGE
+  kickstart <command> [options] [args]
+
+COMMANDS
+  apply [module...]      Install + link everything in the active profile,
+                         or just the named modules.
+  update                 git pull kickstart and every overlay, then apply.
+  status                 What this host is, and what the profile resolves to.
+  doctor                 Check the install for common problems.
+  list [what]            what = modules | profiles | overlays | helpers
+  profile [name]         Show or set the active profile for this host.
+  overlay <sub>          add <git-url> [name] | list | remove <name> | update
+  new module <name>      Scaffold a new module.
+  new helper <name>      Scaffold a new shell helper file.
+  link | unlink          Only manage dotfiles (no installs).
+  push <host> [opts]     Install kickstart on a remote host over ssh.
+  reload                 Print the command to reload your shell.
+  version                Print version and root path.
+
+OPTIONS
+  -p, --profile <name>   Override the active profile for this run.
+  -n, --dry-run          Print what would happen, change nothing.
+  -v, --verbose          Show every command and its output.
+  -y, --yes              Assume yes for prompts.
+      --offline          Skip anything needing direct internet access.
+      --files-only       Skip installs; only link dotfiles and configure.
+      --skip a,b,c       Skip these modules.
+  -h, --help             This text.
+
+EXAMPLES
+  kickstart apply                        # bring this box up to date
+  kickstart apply git tmux -v            # just these two, loudly
+  kickstart -n apply                     # dry run
+  kickstart profile work                 # mark this host as a work box
+  kickstart overlay add git@github.com:me/kickstart-work.git
+  kickstart push build01 --profile remote
+EOF
+}
+
+# Parse global options from anywhere in the argv, leaving positionals in KS_ARGS.
+parse_args() {
+  KS_ARGS=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -n|--dry-run)   KS_DRY_RUN=1 ;;
+      -v|--verbose)   KS_VERBOSE=1 ;;
+      -y|--yes)       KS_YES=1 ;;
+      --offline)      KS_OFFLINE=1 ;;
+      --files-only)   KS_FILES_ONLY=1 ;;
+      -p|--profile)   shift; KS_PROFILE=${1:-} ;;
+      --profile=*)    KS_PROFILE=${1#--profile=} ;;
+      --skip)         shift; KS_SKIP=$(printf '%s' "${1:-}" | tr ',' ' ') ;;
+      --skip=*)       KS_SKIP=$(printf '%s' "${1#--skip=}" | tr ',' ' ') ;;
+      -h|--help)      usage; exit 0 ;;
+      --)             shift; while [ $# -gt 0 ]; do KS_ARGS="$KS_ARGS $1"; shift; done; break ;;
+      -*)             ks_die "unknown option: $1 (try --help)" ;;
+      *)              KS_ARGS="$KS_ARGS $1" ;;
+    esac
+    shift
+  done
+  export KS_DRY_RUN KS_VERBOSE KS_YES KS_OFFLINE KS_FILES_ONLY
+}
+
+# ------------------------------------------------------------------ setup ---
+
+bootstrap_env() {
+  ks_detect_platform
+  ks_search_dirs_init
+  [ -n "$KS_PROFILE" ] || KS_PROFILE=$(ks_config_get KICKSTART_PROFILE personal)
+  export KS_PROFILE
+  ks_mkdir "$KS_STATE_DIR" >/dev/null 2>&1 || true
+}
+
+# ------------------------------------------------------------------- apply --
+
+cmd_apply() {
+  local requested="$*"
+  local modules
+
+  if [ -n "$requested" ]; then
+    modules=$requested
+  else
+    modules=$(ks_profile_resolve "$KS_PROFILE") || exit 1
+  fi
+  [ -n "$modules" ] || ks_die "nothing to do: profile '$KS_PROFILE' resolved to no modules"
+
+  ks_step "kickstart $KS_VERSION -- profile '$KS_PROFILE' on $(ks_platform_summary)"
+  [ "$KS_DRY_RUN" = 1 ] && ks_warn "dry run: no changes will be made"
+  [ "$KS_OFFLINE" = 1 ] && ks_info "offline mode"
+  [ "$KS_FILES_ONLY" = 1 ] && ks_info "files-only mode"
+
+  if [ "$KS_FILES_ONLY" != 1 ] && [ "$KS_DRY_RUN" != 1 ]; then
+    ks_pkg_bootstrap || ks_warn "no usable package manager; continuing with dotfiles only"
+  fi
+
+  local m rc
+  for m in $modules; do
+    if ks_contains "$m" "$KS_SKIP"; then
+      KS_SCOPE=$m ks_skip "skipped by --skip"
+      KS_N_SKIPPED=$((KS_N_SKIPPED + 1))
+      continue
+    fi
+    ks_module_apply "$m"
+    rc=$?
+    ks_module_tally "$rc" "$m"
+  done
+
+  KS_SCOPE=""
+  printf '\n' >&2
+  ks_step "done: ${KS_N_CHANGED} changed, ${KS_N_OK} ok, ${KS_N_SKIPPED} skipped, ${KS_N_FAILED} failed"
+  if [ "$KS_N_FAILED" -gt 0 ]; then
+    ks_error "failed modules:$KS_FAILED_NAMES"
+    ks_info "re-run one of them with: kickstart apply${KS_FAILED_NAMES%% *} -v"
+    return 1
+  fi
+  if [ "$KS_N_CHANGED" -gt 0 ] && [ "$KS_DRY_RUN" != 1 ]; then
+    ks_info "shell changes take effect in new shells, or run: exec \$SHELL -l"
+  fi
+  return 0
+}
+
+cmd_link()   { KS_FILES_ONLY=1; export KS_FILES_ONLY; cmd_apply "$@"; }
+
+cmd_unlink() {
+  local modules m path
+  modules=${*:-$(ks_profile_resolve "$KS_PROFILE")}
+  for m in $modules; do
+    path=$(ks_module_find "$m") || continue
+    KS_SCOPE=$m
+    ks_unlink_tree "$path/files"
+    ks_unlink_tree "$path/files.$KS_OS"
+  done
+  KS_SCOPE=""
+  ks_ok "removed kickstart symlinks (installed packages were left alone)"
+}
+
+# ------------------------------------------------------------------ update --
+
+cmd_update() {
+  ks_step "updating kickstart at $(ks_relpath "$KS_ROOT")"
+  if [ -d "$KS_ROOT/.git" ]; then
+    ks_run git -C "$KS_ROOT" pull --ff-only --quiet ||
+      ks_warn "pull failed (local changes? detached head?) -- continuing with what is on disk"
+  else
+    ks_warn "$(ks_relpath "$KS_ROOT") is not a git checkout; nothing to pull"
+  fi
+  ks_overlay_update
+  cmd_apply
+}
+
+# ------------------------------------------------------- status and doctor --
+
+cmd_status() {
+  printf '%skickstart%s %s\n' "$C_BOLD" "$C_RESET" "$KS_VERSION"
+  printf '  root      %s\n' "$(ks_relpath "$KS_ROOT")"
+  printf '  host      %s\n' "$KS_FQDN"
+  printf '  platform  %s\n' "$(ks_platform_summary)"
+  printf '  profile   %s\n' "$KS_PROFILE"
+  printf '  config    %s\n' "$(ks_relpath "$KS_CONFIG_FILE")"
+
+  local ov
+  ov=$(ks_overlay_names | tr '\n' ' ')
+  printf '  overlays  %s\n' "${ov:-(none)}"
+
+  if [ -d "$KS_ROOT/.git" ]; then
+    printf '  revision  %s\n' "$(git -C "$KS_ROOT" describe --always --dirty 2>/dev/null)"
+  fi
+
+  printf '\n%smodules in profile '\''%s'\''%s\n' "$C_BOLD" "$KS_PROFILE" "$C_RESET"
+  local m mark
+  for m in $(ks_profile_resolve "$KS_PROFILE" 2>/dev/null); do
+    if ks_module_find "$m" >/dev/null; then mark="  "; else mark="${C_RED}??${C_RESET}"; fi
+    printf '  %s %-18s %s\n' "$mark" "$m" "$(ks_module_desc "$m")"
+  done
+}
+
+cmd_doctor() {
+  local problems=0
+  _chk() { # _chk <ok?> <label> <hint>
+    if [ "$1" = 0 ]; then
+      printf '  %sok%s   %s\n' "$C_GREEN" "$C_RESET" "$2"
+    else
+      printf '  %sFAIL%s %s\n       %s\n' "$C_RED" "$C_RESET" "$2" "$3"
+      problems=$((problems + 1))
+    fi
+  }
+  _warn() { printf '  %swarn%s %s\n       %s\n' "$C_YELLOW" "$C_RESET" "$1" "$2"; }
+
+  printf '%schecking kickstart%s\n' "$C_BOLD" "$C_RESET"
+
+  ks_have git; _chk $? "git available" "install git, kickstart needs it to update"
+  [ "$KS_PKG" != none ]; _chk $? "package manager ($KS_PKG)" "no brew/apt/dnf found"
+  [ -d "$KS_ROOT/.git" ]; _chk $? "kickstart is a git checkout" "re-run install.sh to get a proper clone"
+  ks_profile_find "$KS_PROFILE" >/dev/null; _chk $? "profile '$KS_PROFILE' exists" "kickstart list profiles"
+
+  # Shell wiring.
+  local rc found=1
+  for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
+    [ -f "$rc" ] || continue
+    if grep -q 'kickstart:shell' "$rc" 2>/dev/null; then found=0; fi
+  done
+  _chk $found "shell rc files wired to kickstart" "run: kickstart apply shell"
+
+  # Dangling symlinks anywhere we manage.
+  local dangling=0 m path f
+  for m in $(ks_profile_resolve "$KS_PROFILE" 2>/dev/null); do
+    path=$(ks_module_find "$m") || continue
+    for d in "$path/files" "$path/files.$KS_OS"; do
+      [ -d "$d" ] || continue
+      while IFS= read -r f; do
+        [ -z "$f" ] && continue
+        t="$HOME/${f#"$d"/}"
+        if [ -L "$t" ] && [ ! -e "$t" ]; then
+          _warn "dangling symlink $(ks_relpath "$t")" "kickstart apply $m"
+          dangling=$((dangling + 1))
+        fi
+      done <<EOF
+$(find "$d" -type f 2>/dev/null)
+EOF
+    done
+  done
+  [ "$dangling" = 0 ] && printf '  %sok%s   no dangling symlinks\n' "$C_GREEN" "$C_RESET"
+
+  # PATH sanity.
+  # shellcheck disable=SC2088  # the tildes below are display text, not paths
+  case ":$PATH:" in
+    *":$HOME/.local/bin:"*) printf '  %sok%s   ~/.local/bin on PATH\n' "$C_GREEN" "$C_RESET" ;;
+    *) _warn "~/.local/bin not on PATH" "open a new shell, or: kickstart apply shell" ;;
+  esac
+
+  printf '\n'
+  if [ "$problems" = 0 ]; then
+    ks_ok "no problems found"
+  else
+    ks_error "$problems problem(s) found"
+    return 1
+  fi
+}
+
+# -------------------------------------------------------------------- list --
+
+cmd_list() {
+  case "${1:-modules}" in
+    modules|module|m)
+      local m
+      for m in $(ks_module_list); do
+        printf '%-20s %s\n' "$m" "$(ks_module_desc "$m")"
+      done
+      ;;
+    profiles|profile|p)
+      local p
+      for p in $(ks_profile_list); do
+        printf '%-14s %s\n' "$p" "$(ks_profile_resolve "$p" 2>/dev/null | tr '\n' ' ')"
+      done
+      ;;
+    overlays|overlay|o)
+      local d
+      for d in $(ks_overlay_dirs); do
+        printf '%-20s %s\n' "$(basename "$d")" "$(git -C "$d" remote get-url origin 2>/dev/null)"
+      done
+      ;;
+    helpers|helper|h)
+      "$KS_ROOT/shell/khelp.sh" 2>/dev/null || ks_die "helper listing needs shell/khelp.sh"
+      ;;
+    *) ks_die "list what? modules | profiles | overlays | helpers" ;;
+  esac
+}
+
+# ----------------------------------------------------------------- profile --
+
+cmd_profile() {
+  if [ -z "${1:-}" ]; then
+    printf '%s\n' "$KS_PROFILE"
+    return 0
+  fi
+  ks_profile_find "$1" >/dev/null || ks_die "unknown profile '$1' (kickstart list profiles)"
+  ks_config_set KICKSTART_PROFILE "$1"
+  ks_ok "active profile for $KS_HOSTNAME is now '$1'"
+  ks_info "apply it with: kickstart apply"
+}
+
+# ----------------------------------------------------------------- overlay --
+
+cmd_overlay() {
+  local sub=${1:-list}; shift 2>/dev/null || true
+  case "$sub" in
+    add)    ks_overlay_add "${1:-}" "${2:-}" ;;
+    remove|rm) ks_overlay_remove "${1:-}" ;;
+    update) ks_overlay_update ;;
+    list)   cmd_list overlays ;;
+    *)      ks_die "overlay: add | list | remove | update" ;;
+  esac
+}
+
+# --------------------------------------------------------------------- new --
+
+cmd_new() {
+  local kind=${1:-} name=${2:-}
+  [ -n "$name" ] || ks_die "usage: kickstart new <module|helper> <name>"
+  case "$kind" in
+    module) new_module "$name" ;;
+    helper) new_helper "$name" ;;
+    *) ks_die "kickstart new <module|helper> <name>" ;;
+  esac
+}
+
+# Where to scaffold: an overlay if one is set as the default target, else core.
+_ks_scaffold_root() {
+  local target
+  target=$(ks_config_get KICKSTART_SCAFFOLD_TARGET "")
+  if [ -n "$target" ] && [ -d "$KS_OVERLAY_DIR/$target" ]; then
+    printf '%s' "$KS_OVERLAY_DIR/$target"
+  else
+    printf '%s' "$KS_ROOT"
+  fi
+}
+
+new_module() {
+  local name=$1 root dir
+  root=$(_ks_scaffold_root)
+  dir="$root/modules/$name"
+  [ -e "$dir" ] && ks_die "module already exists: $(ks_relpath "$dir")"
+  mkdir -p "$dir/files"
+  cat >"$dir/module.sh" <<EOF
+# ${name} -- one line description of what this gives you.
+DESC="TODO: describe ${name}"
+TAGS="cli"
+
+# Binaries this module provides. If they all exist, the module is considered
+# installed and the install step is skipped.
+PROVIDES="${name}"
+
+# Package names per manager. Space separated if more than one.
+PKG_BREW="${name}"
+PKG_APT="${name}"
+PKG_DNF="${name}"
+
+# Optional gates -- delete the ones you do not need.
+# REQUIRES_OS="darwin"          # darwin | linux (space separated for both)
+# REQUIRES_PROFILE="work"       # only apply on hosts with this profile
+# REQUIRES_CMD="docker"         # skip unless these commands exist
+# NET=1                         # needs direct internet; skipped with --offline
+# CASK="some-gui-app"           # macOS casks
+
+# Anything under files/ is symlinked into \$HOME preserving structure:
+#   files/.config/${name}/config  ->  ~/.config/${name}/config
+# Use files.darwin/ and files.linux/ for OS specific overrides.
+
+# Escape hatch: define ks_install to do it yourself (curl a release, etc).
+# ks_install() {
+#   ks_run curl -fsSL https://example.com/${name} -o "\$HOME/.local/bin/${name}"
+#   ks_run chmod +x "\$HOME/.local/bin/${name}"
+# }
+
+# Runs on every apply. Must be idempotent. Call ks_touched if you changed
+# something so the run summary is accurate.
+# ks_configure() {
+#   :
+# }
+EOF
+  touch "$dir/files/.gitkeep"
+  ks_ok "created $(ks_relpath "$dir")"
+  ks_info "add it to a profile: $(ks_relpath "$root")/profiles/<name>.profile"
+}
+
+new_helper() {
+  local name=$1 root dir prefix file
+  root=$(_ks_scaffold_root)
+  dir="$root/shell/source"
+  mkdir -p "$dir"
+
+  # Accept "50_kube" or "kube"; default topic files to the 50 band.
+  case "$name" in
+    [0-9][0-9]_*) prefix="" ;;
+    *)            prefix="50_" ;;
+  esac
+  file="$dir/${prefix}${name}.sh"
+  [ -e "$file" ] && ks_die "helper already exists: $(ks_relpath "$file")"
+
+  cat >"$file" <<EOF
+# shellcheck shell=bash
+# ${name} helpers. Sourced by every interactive shell (bash and zsh), so keep
+# it portable: no zsh-only or bash-4-only syntax.
+#
+# Document each function with a '#:' line. That is what \`khelp\` reads.
+
+#: ${name} -- TODO: what this does
+${name}() {
+  echo "TODO: implement ${name}"
+}
+EOF
+  ks_ok "created $(ks_relpath "$file")"
+  ks_info "load it now with: kreload    (or open a new shell)"
+}
+
+# -------------------------------------------------------------------- push --
+
+cmd_push() {
+  # $HOME here is deliberately unexpanded: it is evaluated by the remote shell,
+  # whose home directory is the one that matters.
+  # shellcheck disable=SC2016
+  local host="" profile="remote" dest='$HOME/.kickstart' with_overlays=0 files_only=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --profile) shift; profile=${1:-remote} ;;
+      --profile=*) profile=${1#--profile=} ;;
+      --dest) shift; dest=${1:-} ;;
+      --with-overlays) with_overlays=1 ;;
+      --files-only) files_only=1 ;;
+      -*) ks_die "push: unknown option $1" ;;
+      *) host=$1 ;;
+    esac
+    shift
+  done
+  [ -n "$host" ] || ks_die "usage: kickstart push <[user@]host> [--profile p] [--with-overlays] [--files-only]"
+
+  ks_step "pushing kickstart to $host (profile=$profile)"
+
+  local tar_excludes="--exclude=.git --exclude=.DS_Store"
+  local tmp; tmp=$(ks_mktemp).tar.gz
+
+  # shellcheck disable=SC2086
+  tar czf "$tmp" -C "$(dirname "$KS_ROOT")" $tar_excludes "$(basename "$KS_ROOT")" ||
+    ks_die "failed to package $KS_ROOT"
+  ks_info "payload $(du -h "$tmp" | cut -f1)"
+
+  ks_run ssh "$host" "mkdir -p $dest && rm -rf $dest.new && mkdir -p $dest.new" ||
+    ks_die "ssh to $host failed"
+
+  # shellcheck disable=SC2029
+  ssh "$host" "tar xzf - -C $dest.new --strip-components=1" <"$tmp" ||
+    ks_die "failed to unpack on $host"
+  rm -f "$tmp"
+
+  ks_run ssh "$host" "rm -rf $dest.old && mv $dest $dest.old 2>/dev/null; mv $dest.new $dest; rm -rf $dest.old"
+
+  if [ "$with_overlays" = 1 ]; then
+    local d name rdest
+    for d in $(ks_overlay_dirs); do
+      name=$(basename "$d")
+      rdest="\$HOME/.local/share/kickstart/overlays/$name"
+      ks_step "pushing overlay $name"
+      tmp=$(ks_mktemp).tar.gz
+      # shellcheck disable=SC2086
+      tar czf "$tmp" -C "$d" $tar_excludes . || ks_die "failed to package overlay $name"
+      ks_run ssh "$host" "mkdir -p $rdest"
+      # shellcheck disable=SC2029  # $rdest is ours and intentionally local-expanded
+      ssh "$host" "tar xzf - -C $rdest" <"$tmp" || ks_die "failed to unpack overlay $name"
+      rm -f "$tmp"
+    done
+  fi
+
+  local flags="--profile $profile --offline -y"
+  [ "$files_only" = 1 ] && flags="$flags --files-only"
+  [ "$KS_VERBOSE" = 1 ] && flags="$flags -v"
+
+  ks_step "running apply on $host"
+  # shellcheck disable=SC2029
+  ssh -t "$host" "$dest/bin/kickstart apply $flags"
+}
+
+# ------------------------------------------------------------------ misc ----
+
+cmd_reload() {
+  cat <<'EOF'
+Reload your current shell with:
+
+  exec $SHELL -l
+
+Or, if kickstart's shell integration is already loaded, just:
+
+  kreload
+EOF
+}
+
+cmd_version() {
+  printf 'kickstart %s\n' "$KS_VERSION"
+  printf 'root      %s\n' "$KS_ROOT"
+  [ -d "$KS_ROOT/.git" ] &&
+    printf 'revision  %s\n' "$(git -C "$KS_ROOT" describe --always --dirty 2>/dev/null)"
+  printf 'platform  %s\n' "$(ks_platform_summary)"
+}
+
+# ------------------------------------------------------------------- main ---
+
+main() {
+  [ $# -eq 0 ] && { usage; exit 0; }
+  local cmd=$1; shift
+  parse_args "$@"
+  # shellcheck disable=SC2086
+  set -- $KS_ARGS
+
+  case "$cmd" in
+    apply|a)   bootstrap_env; cmd_apply "$@" ;;
+    update|up) bootstrap_env; cmd_update ;;
+    status|st) bootstrap_env; cmd_status ;;
+    doctor|dr) bootstrap_env; cmd_doctor ;;
+    list|ls)   bootstrap_env; cmd_list "$@" ;;
+    profile)   bootstrap_env; cmd_profile "$@" ;;
+    overlay)   bootstrap_env; cmd_overlay "$@" ;;
+    new)       bootstrap_env; cmd_new "$@" ;;
+    link)      bootstrap_env; cmd_link "$@" ;;
+    unlink)    bootstrap_env; cmd_unlink "$@" ;;
+    push)      bootstrap_env; cmd_push "$@" ;;
+    reload)    cmd_reload ;;
+    version|--version|-V) bootstrap_env; cmd_version ;;
+    help|--help|-h) usage ;;
+    *) ks_error "unknown command: $cmd"; usage; exit 1 ;;
+  esac
+}
+
+main "$@"

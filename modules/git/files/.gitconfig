@@ -1,0 +1,57 @@
+# Managed by kickstart. Machine-local settings go in ~/.gitconfig.local.
+[include]
+	path = ~/.gitconfig.local
+
+# Work repositories get a separate identity. Clone work things under ~/work.
+[includeIf "gitdir:~/work/"]
+	path = ~/.gitconfig.work
+
+[init]
+	defaultBranch = main
+
+[core]
+	excludesfile = ~/.config/git/ignore
+	autocrlf = input
+
+[pull]
+	ff = only
+
+[push]
+	default = current
+	autoSetupRemote = true
+
+[fetch]
+	prune = true
+
+[rebase]
+	autosquash = true
+	autostash = true
+
+[diff]
+	algorithm = histogram
+	colorMoved = default
+
+[merge]
+	conflictstyle = zdiff3
+
+[rerere]
+	enabled = true
+
+[log]
+	date = iso
+
+[color]
+	ui = auto
+
+[alias]
+	st = status --short --branch
+	co = checkout
+	sw = switch
+	br = branch -vv
+	last = log -1 HEAD --stat
+	lg = log --oneline --graph --decorate --all -30
+	unstage = reset HEAD --
+	amend = commit --amend --no-edit
+	fixup = commit --fixup
+	# Who touched this file, most recent first.
+	who = shortlog -sne --

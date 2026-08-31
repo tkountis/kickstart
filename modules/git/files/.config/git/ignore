@@ -1,0 +1,23 @@
+# Global gitignore, managed by kickstart.
+
+# OS noise
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editors
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+.nvimlog
+
+# Build and dependency output that has no business being committed anywhere
+.direnv/
+.env.local
+
+# Personal scratch space inside any repo
+/scratch/
+/.scratch/
+TODO.local.md
