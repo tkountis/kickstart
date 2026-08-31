@@ -82,19 +82,27 @@ ok()   { printf '  %sok%s   %s\n' "$GRN" "$R" "$*"; }
 bad()  { printf '  %sFAIL%s %s\n' "$RED" "$R" "$*"; FAILED=$((FAILED+1)); }
 FAILED=0
 
-say "$(. /etc/os-release 2>/dev/null && echo "$PRETTY_NAME") / $(uname -m)"
-
-# Prerequisites a real image would already have, or that install.sh installs.
-if command -v apt-get >/dev/null 2>&1; then
-  export DEBIAN_FRONTEND=noninteractive
-  apt-get update -qq >/dev/null 2>&1
-  apt-get install -y -qq git ca-certificates sudo zsh curl >/dev/null 2>&1
-elif command -v dnf >/dev/null 2>&1; then
-  dnf install -y -q git sudo zsh curl findutils >/dev/null 2>&1
-fi
-
-# An unprivileged user with sudo, which is the realistic case.
+# ---- root phase: prerequisites, an unprivileged user, the payload ----------
+#
+# Everything a human would have to do on a fresh box, done once as root, then
+# we drop privileges because that is the realistic case.
 if [ "${AS_ROOT:-0}" != 1 ]; then
+  say "$(. /etc/os-release 2>/dev/null && echo "$PRETTY_NAME") / $(uname -m)"
+
+  # git is the one hard prerequisite. zsh/curl are here so the checks below can
+  # run; a real user would get them from a profile.
+  if command -v apt-get >/dev/null 2>&1; then
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update -qq >/dev/null 2>&1
+    apt-get install -y -qq git ca-certificates sudo zsh curl >/dev/null 2>&1
+  elif command -v dnf >/dev/null 2>&1; then
+    dnf install -y -q git sudo zsh curl findutils >/dev/null 2>&1
+  fi
+  if ! command -v git >/dev/null 2>&1; then
+    bad "could not install git in this image; nothing else can run"
+    exit 1
+  fi
+
   id ks >/dev/null 2>&1 || useradd -m -s /bin/bash ks
   echo 'ks ALL=(ALL) NOPASSWD:ALL' >/etc/sudoers.d/ks
   mkdir -p /home/ks/src && tar xzf /payload/kickstart.tgz -C /home/ks/src
@@ -102,10 +110,24 @@ if [ "${AS_ROOT:-0}" != 1 ]; then
   exec su ks -c "HOME=/home/ks AS_ROOT=1 PROFILE=$PROFILE OFFLINE=$OFFLINE DO_SHELL=${DO_SHELL:-0} bash /payload/run.sh"
 fi
 
+# ---- user phase -----------------------------------------------------------
+
 cd "$HOME" || exit 1
 SRC="$HOME/src"
-[ -d "$SRC" ] || { mkdir -p "$SRC" && tar xzf /payload/kickstart.tgz -C "$SRC"; }
 chmod +x "$SRC/install.sh" "$SRC/bin/kickstart" "$SRC/shell/khelp.sh" 2>/dev/null
+
+# The payload is a tarball of the working tree, which by design does not carry
+# .git -- so make it a real repository here. That way install.sh's `git clone`
+# path gets exercised for real, rather than being special-cased for the test,
+# and uncommitted changes are still what we are testing.
+if [ ! -d "$SRC/.git" ]; then
+  git init -q -b main "$SRC" 2>/dev/null || {
+    git init -q "$SRC" && git -C "$SRC" symbolic-ref HEAD refs/heads/main
+  }
+  git -C "$SRC" add -A
+  git -C "$SRC" -c user.email=ks@example.invalid -c user.name=ks \
+    commit -qm "test payload" || { bad "could not commit the payload"; exit 1; }
+fi
 
 say "bootstrap via install.sh"
 if "$SRC/install.sh" --repo "file://$SRC" --root "$HOME/.kickstart" \
@@ -114,6 +136,10 @@ if "$SRC/install.sh" --repo "file://$SRC" --root "$HOME/.kickstart" \
 else
   bad "install.sh"
   sed 's/^/       /' /tmp/boot.log | tail -30
+  # Everything below depends on a working checkout. Continuing would produce a
+  # wall of consequential failures that hide the real one.
+  printf '\n%sbootstrap failed; skipping the rest%s\n' "$RED" "$R"
+  exit 1
 fi
 
 KS="$HOME/.kickstart/bin/kickstart"
@@ -168,7 +194,7 @@ else
   printf '%s%d container check(s) failed%s\n' "$RED" "$FAILED" "$R"
 fi
 
-if [ "$DO_SHELL" = 1 ]; then
+if [ "${DO_SHELL:-0}" = 1 ]; then
   printf '\n%sinteractive shell -- exit to destroy the container%s\n\n' "$YLW" "$R"
   exec bash -l
 fi
